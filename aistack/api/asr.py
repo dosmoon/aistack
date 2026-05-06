@@ -32,6 +32,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 
 from aistack import _gpu_lock
 from aistack.asr import faster_whisper as _fw
+from aistack.asr import installed_providers
 from aistack.asr import parakeet as _pk
 from aistack.asr import sensevoice as _sv
 from aistack.errors import AIError, Kind, http_status_for
@@ -48,14 +49,57 @@ _WHISPER_SIZES = {
     "large-v3-turbo", "distil-large-v3",
 }
 
+# Languages that SenseVoice handles best (CJK + tones).
+_CJK_LANGS = {"zh", "yue", "ja", "ko"}
 
-def _select_provider(model: str) -> Tuple[object, dict]:
+# Languages that Parakeet TDT v3 supports (25 European + English).
+_PARAKEET_LANGS = {
+    "en", "bg", "hr", "cs", "da", "nl", "et", "fi", "fr", "de",
+    "el", "hu", "it", "lv", "lt", "mt", "pl", "pt", "ro", "sk",
+    "sl", "es", "sv", "ru", "uk",
+}
+
+
+def _select_for_auto(language: str | None) -> Tuple[object, dict]:
+    """Pick the best installed ASR backend for the given language hint.
+
+    Routing policy:
+      * CJK / tonal language hint -> SenseVoice (if installed).
+      * European-language hint covered by Parakeet TDT v3 -> Parakeet.
+      * Anything else (or unhinted) -> faster-whisper-small as the
+        general-purpose fallback.
+
+    If the preferred backend is not installed, we degrade to the
+    next-best installed backend rather than failing the request — the
+    `auto` mode is meant to "just work" in any deployment.
+    """
+    installed = set(installed_providers())
+    iso = (language or "").strip().lower()
+
+    if iso in _CJK_LANGS and "sensevoice" in installed:
+        return _sv, {"model_name": "iic/SenseVoiceSmall"}
+    if iso in _PARAKEET_LANGS and "parakeet" in installed:
+        return _pk, {"model_name": "nvidia/parakeet-tdt-0.6b-v3"}
+    if "faster-whisper" in installed:
+        return _fw, {"model_name": "small"}
+    raise AIError(
+        Kind.NETWORK, "aistack",
+        "No ASR backend installed. Add at least one extra: "
+        "uv pip install -e .[asr-fasterwhisper]",
+    )
+
+
+def _select_provider(model: str, language: str | None) -> Tuple[object, dict]:
     """Pick a provider module + transcribe-kwargs from the OpenAI `model` field.
 
-    Returns (module, kwargs). Raises AIError(MALFORMED) on unknown models.
+    Special values:
+      * "" (empty) or "auto" -> _select_for_auto(language).
+
+    Otherwise the model field is matched against the explicit selectors
+    below. Raises AIError(MALFORMED) on unknown models.
     """
-    if not model:
-        raise AIError(Kind.MALFORMED, "aistack", "Missing required field: model")
+    if not model or model.strip().lower() == "auto":
+        return _select_for_auto(language)
 
     m = model.strip().lower()
 
@@ -89,7 +133,7 @@ def _select_provider(model: str) -> Tuple[object, dict]:
     raise AIError(
         Kind.MALFORMED, "aistack",
         f"Unknown model: {model!r}. "
-        "Use whisper-{size}, parakeet, or sensevoice.",
+        "Use 'auto', whisper-{size}, parakeet, or sensevoice.",
     )
 
 
@@ -108,8 +152,8 @@ def _to_openai_response(result: dict, response_format: str) -> dict | str:
 @router.post("/v1/audio/transcriptions")
 async def transcribe(
     file: UploadFile = File(..., description="Audio file (any ffmpeg-readable format)."),
-    model: str = Form(..., description="Provider/model selector. See module docstring."),
-    language: str | None = Form(None, description="ISO 639-1 code, or omit for auto-detect."),
+    model: str = Form("", description="Provider/model selector. Empty or 'auto' = pick best installed backend for the given language. Otherwise: whisper-{size} | parakeet | sensevoice."),
+    language: str | None = Form(None, description="ISO 639-1 code (e.g. 'en', 'zh'). Omit for auto-detect."),
     response_format: str = Form("json", description="json | verbose_json | text"),
     translate: bool = Form(False, description="If true, transcribe to English instead of source language. Only Whisper-family models support translation."),
 ):
@@ -130,7 +174,7 @@ async def transcribe(
             shutil.copyfileobj(file.file, fh)
 
         try:
-            module, kwargs = _select_provider(model)
+            module, kwargs = _select_provider(model, language)
         except AIError as e:
             return JSONResponse(
                 status_code=http_status_for(e.kind),

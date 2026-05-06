@@ -104,6 +104,40 @@ def put(provider: str, key: Any, model: Any, *,
     _ensure_evictor()
 
 
+def evict_category(category: str) -> int:
+    """Drop all cached entries tagged with `category`.
+
+    Used by capability handlers that need to free same-class peers
+    before invoking a different capability — e.g. the LLM endpoint
+    evicts every "asr-main" entry before forwarding to Ollama, so
+    aistack's ASR model is not pinning VRAM that Ollama needs.
+
+    Triggers gc + torch.cuda.empty_cache() after the drop so VRAM is
+    actually released, not just dereferenced. Returns the count of
+    entries removed.
+    """
+    evicted: list[tuple] = []
+    with _LOCK:
+        for composite in list(_CACHE.keys()):
+            if _CACHE[composite].get("category") == category:
+                del _CACHE[composite]
+                evicted.append(composite)
+    if evicted:
+        gc.collect()
+        try:
+            import torch  # type: ignore
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
+        for provider, key in evicted:
+            logger.info(
+                "evicted by category=%s: provider=%s key=%s",
+                category, provider, key,
+            )
+    return len(evicted)
+
+
 def evict_idle(now: float | None = None) -> int:
     """Drop entries idle longer than KEEP_ALIVE_SEC. Returns count evicted."""
     if now is None:

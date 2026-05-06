@@ -12,7 +12,9 @@ from fastapi import FastAPI
 from aistack import __version__
 from aistack import asr as asr_pkg
 from aistack.api import asr as asr_api
+from aistack.api import llm as llm_api
 from aistack.api import tts as tts_api
+from aistack.backends.llm import ollama as llm_ollama
 from aistack.tts import qwen3 as tts_qwen3
 
 
@@ -38,6 +40,7 @@ app = FastAPI(
 
 app.include_router(asr_api.router)
 app.include_router(tts_api.router)
+app.include_router(llm_api.router)
 
 
 @app.get("/health")
@@ -54,6 +57,9 @@ async def list_models() -> dict:
         importable (pure import probe, no model load).
       - TTS entry is emitted only if the Qwen3-TTS upstream container
         responds to /health.
+      - LLM entries are aggregated from Ollama (`/api/tags`) when the
+        daemon is reachable; an unreachable Ollama silently contributes
+        nothing rather than failing the whole listing.
 
     Clients can read this once on startup to know which capabilities are
     available and skip a 503 round-trip.
@@ -68,4 +74,5 @@ async def list_models() -> dict:
                 "capabilities": ["tts"],
             }
         )
+    data.extend(await llm_ollama.model_entries())
     return {"object": "list", "data": data}
