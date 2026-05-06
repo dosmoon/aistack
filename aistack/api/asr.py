@@ -109,6 +109,7 @@ async def transcribe(
     model: str = Form(..., description="Provider/model selector. See module docstring."),
     language: str | None = Form(None, description="ISO 639-1 code, or omit for auto-detect."),
     response_format: str = Form("json", description="json | verbose_json | text"),
+    translate: bool = Form(False, description="If true, transcribe to English instead of source language. Only Whisper-family models support translation."),
 ):
     if response_format not in ("json", "verbose_json", "text"):
         raise HTTPException(
@@ -138,6 +139,7 @@ async def transcribe(
             result = module.transcribe(
                 audio_path,
                 language=language,
+                translate=translate,
                 **kwargs,
             )
         except AIError as e:
