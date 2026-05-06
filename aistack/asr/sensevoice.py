@@ -372,6 +372,7 @@ def transcribe(
             sub_segs = _split_chunk_by_punctuation(
                 chunk_words, chunk_ts, chunk_start_ms=int(start_ms),
                 fallback_text=parsed["text"], fallback_end_ms=int(end_ms),
+                lang=parsed.get("language"),
             )
 
             for sub in sub_segs:
@@ -437,6 +438,51 @@ def _keep_chunk(parsed: dict, requested_lang: str) -> bool:
     return True
 
 
+def _join_words_for_lang(words: list, lang: str | None) -> str:
+    """Reconstruct displayable text from a per-token word list.
+
+    SenseVoice's output_timestamp=True returns one entry per token, with
+    no SentencePiece markers and no whitespace baked in. The right join
+    rule depends on the language family:
+
+      * CJK (zh / yue / ja / ko) — concatenate; spaces are unnatural
+        between Han characters / kana. This matches FunASR's own `text`
+        field for these languages.
+      * Latin (English, etc.) — space-join, but suppress the leading
+        space when the next token starts with a non-alphanumeric (so
+        "word , next" doesn't replace the natural "word, next").
+
+    The earlier implementation used "".join unconditionally, which is
+    correct for CJK but produces unreadable run-on output for English
+    ("Msready,yessir.").
+    """
+    if lang in ("zh", "yue", "ja", "ko"):
+        return "".join(words)
+    out: list[str] = []
+    for w in words:
+        if not w:
+            continue
+        if not out:
+            out.append(w)
+            continue
+        prev = out[-1]
+        # No space before punctuation / non-alphanumeric tokens
+        # ("word", ",") -> "word,"   not "word ,"
+        if not w[0].isalnum():
+            out.append(w)
+            continue
+        # Glue consecutive digit tokens: ("5", "0") -> "50"
+        # SenseVoice's tokenizer emits multi-digit numbers as one token per
+        # digit; FunASR's own `text` field merges them but our per-sub-
+        # segment text is rebuilt from `words[]`, so we have to do it here.
+        if prev and prev[-1].isdigit() and w[0].isdigit():
+            out.append(w)
+            continue
+        out.append(" ")
+        out.append(w)
+    return "".join(out).strip()
+
+
 def _split_chunk_by_punctuation(
     words: list,
     timestamps: list,
@@ -444,6 +490,7 @@ def _split_chunk_by_punctuation(
     chunk_start_ms: int,
     fallback_text: str,
     fallback_end_ms: int,
+    lang: str | None = None,
 ) -> list:
     """Walk a VAD chunk's word stream and emit subtitle-friendly sub-segments.
 
@@ -491,7 +538,7 @@ def _split_chunk_by_punctuation(
         subs.append({
             "start": (chunk_start_ms + first_start) / 1000.0,
             "end":   (chunk_start_ms + last_end) / 1000.0,
-            "text":  "".join(out_words),
+            "text":  _join_words_for_lang(out_words, lang),
             "words": [
                 {
                     "start": (chunk_start_ms + s) / 1000.0,
