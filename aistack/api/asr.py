@@ -27,7 +27,7 @@ import shutil
 import tempfile
 from typing import Tuple
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from aistack import _gpu_lock
@@ -38,6 +38,38 @@ from aistack.asr import sensevoice as _sv
 from aistack.errors import AIError, Kind, http_status_for
 
 logger = logging.getLogger("aistack.asr")
+
+
+class _CancelToken:
+    """Cooperative cancel signal honoured by all three ASR backends.
+
+    They check `.cancelled` between segments / VAD chunks (see
+    aistack/asr/*.py). Setting it from the handler when the HTTP client
+    disconnects lets a long transcription release the GPU slot promptly
+    instead of running to completion on a dead connection.
+    """
+    __slots__ = ("cancelled",)
+
+    def __init__(self) -> None:
+        self.cancelled: bool = False
+
+
+async def _watch_disconnect(request: Request, token: _CancelToken) -> None:
+    """Poll for client disconnect; set token.cancelled when it happens."""
+    try:
+        while not token.cancelled:
+            try:
+                if await request.is_disconnected():
+                    token.cancelled = True
+                    logger.info("ASR client disconnected; cancelling in-flight transcription")
+                    return
+            except Exception:
+                # is_disconnected() can raise during shutdown; treat as
+                # still-connected and try again next tick.
+                pass
+            await asyncio.sleep(0.5)
+    except asyncio.CancelledError:
+        pass
 
 router = APIRouter(tags=["asr"])
 
@@ -151,6 +183,7 @@ def _to_openai_response(result: dict, response_format: str) -> dict | str:
 
 @router.post("/v1/audio/transcriptions")
 async def transcribe(
+    request: Request,
     file: UploadFile = File(..., description="Audio file (any ffmpeg-readable format)."),
     model: str = Form("", description="Provider/model selector. Empty or 'auto' = pick best installed backend for the given language. Otherwise: whisper-{size} | parakeet | sensevoice."),
     language: str | None = Form(None, description="ISO 639-1 code (e.g. 'en', 'zh'). Omit for auto-detect."),
@@ -181,10 +214,14 @@ async def transcribe(
                 content=e.to_envelope(),
             )
 
-        # Single-task GPU policy: at most one ASR inference at a time on
-        # this aistack worker. Concurrent requests get HTTP 503 + Retry-
-        # After. The blocking transcribe() runs in a worker thread so the
-        # FastAPI event loop stays responsive (e.g. /health stays live).
+        # Single-task GPU policy: at most one inference at a time across
+        # the entire gateway (ASR / LLM proxy / TTS proxy share one slot).
+        # Concurrent requests get HTTP 503 + Retry-After. The blocking
+        # transcribe() runs in a worker thread so the FastAPI event loop
+        # stays responsive (e.g. /health stays live, and the disconnect
+        # watcher below can set the cancel token).
+        cancel_token = _CancelToken()
+        watcher = asyncio.create_task(_watch_disconnect(request, cancel_token))
         try:
             with _gpu_lock.busy_or_503("asr"):
                 try:
@@ -193,6 +230,7 @@ async def transcribe(
                         audio_path,
                         language=language,
                         translate=translate,
+                        cancel_token=cancel_token,
                         **kwargs,
                     )
                 except AIError as e:
@@ -215,6 +253,12 @@ async def transcribe(
             # 503 from busy_or_503 — let FastAPI render it; we still
             # need to clean up the temp dir, which the outer finally does.
             raise
+        finally:
+            watcher.cancel()
+            try:
+                await watcher
+            except (asyncio.CancelledError, Exception):
+                pass
 
         payload = _to_openai_response(result, response_format)
         if response_format == "text":

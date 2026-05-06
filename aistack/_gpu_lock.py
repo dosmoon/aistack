@@ -1,25 +1,34 @@
-"""Single-task GPU lock for aistack ASR endpoints.
+"""Single-task GPU lock spanning every aistack capability.
 
 The 8 GB VRAM on consumer hardware (e.g. RTX 4060 Laptop) cannot hold
-multiple ASR backends with their inference workspaces simultaneously.
-Concurrent requests would race for VRAM and OOM the worker.
+multiple inference workloads with their workspaces simultaneously.
+aistack's stated mission is to act as the local AI capability gateway
+that owns GPU scheduling — so this lock is process-wide and shared by
+ASR (in-process), LLM proxy (Ollama), and TTS proxy (Qwen3-TTS Docker).
+At most one capability holds the slot at a time; overflow returns HTTP
+503 + Retry-After and the caller decides whether to back off.
 
-Strategy: at most one ASR inference at a time, reject overflow with HTTP
-503 + Retry-After. No queue — callers are expected to retry. Pairs with
-the cache module's hot-swap-on-mismatch policy: a request that targets a
-different model than the one currently resident triggers eviction +
-load before it acquires the lock.
+Why one lock for everything (not per-capability):
+    Concurrent ASR + LLM on 8 GB → OOM. Concurrent ASR + TTS-container
+    inference → OOM. The proxies don't run inference in-process but the
+    upstream they forward to does, and from a VRAM perspective it's the
+    same GPU. The lock represents "the GPU is currently doing inference
+    work for somebody" rather than "this Python process is doing CUDA
+    work right now."
 
-The lock is process-wide (threading.Lock, not asyncio.Lock) because the
-actual heavy work runs in asyncio.to_thread workers. Only the ASR
-endpoint guards against concurrent inference; TTS is a transparent
-proxy to the Qwen3-TTS Docker sidecar and does no in-process GPU work,
-so it is intentionally excluded.
+Two acquire APIs:
+    busy_or_503        context manager. For sync work in to_thread (ASR).
+    try_acquire/release manual pair. For async streaming proxies (LLM/TTS)
+                       where the lock must be held across yields and
+                       released in the stream's finally clause.
 
-Cross-process contention (Ollama, Qwen3-TTS Docker) is out of scope
-here — those run in their own GPU contexts and must coordinate
-externally (short keep_alive on Ollama side, sequential workflow at
-the orchestration layer).
+Both APIs use the same underlying threading.Lock so the choice of API
+doesn't change the mutex semantics — it's only about whether the caller
+can use a `with` block or needs explicit release.
+
+Cross-process contention beyond the inference slot (e.g. Qwen3-TTS
+container's resident VRAM reservation set by gpu_memory_utilization)
+is configuration, not scheduling — see docker/tts_qwen3/ for tuning.
 """
 
 from __future__ import annotations
@@ -30,31 +39,64 @@ from contextlib import contextmanager
 from fastapi import HTTPException
 
 _LOCK = threading.Lock()
+_HOLDER: str | None = None
+
+
+def _busy_exception(category: str, retry_after_sec: int) -> HTTPException:
+    holder = _HOLDER or "another request"
+    return HTTPException(
+        status_code=503,
+        detail=(
+            f"aistack GPU slot is busy (held by {holder}); rejected {category}. "
+            f"Retry after a few seconds."
+        ),
+        headers={"Retry-After": str(retry_after_sec)},
+    )
 
 
 @contextmanager
 def busy_or_503(category: str = "asr", retry_after_sec: int = 5):
-    """Acquire the GPU slot or raise HTTP 503.
-
-    Non-blocking: if another request is mid-inference the call returns
-    immediately with 503 and a Retry-After header. The caller (e.g.
-    VideoCraft) decides whether to back off and retry.
-    """
+    """Acquire the GPU slot or raise HTTP 503. Sync context manager."""
+    global _HOLDER
     if not _LOCK.acquire(blocking=False):
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                f"aistack {category} backend is busy serving another request. "
-                f"Retry after a few seconds."
-            ),
-            headers={"Retry-After": str(retry_after_sec)},
-        )
+        raise _busy_exception(category, retry_after_sec)
+    _HOLDER = category
     try:
         yield
     finally:
+        _HOLDER = None
         _LOCK.release()
+
+
+def try_acquire_or_503(category: str, retry_after_sec: int = 5) -> None:
+    """Manual acquire for async streaming handlers.
+
+    Pairs with `release()`. The caller MUST release in a finally clause,
+    typically inside the StreamingResponse body iterator's finally so
+    the slot stays held until the last byte is sent (or the client
+    disconnects). Raises HTTPException(503) on contention — let FastAPI
+    render it.
+    """
+    global _HOLDER
+    if not _LOCK.acquire(blocking=False):
+        raise _busy_exception(category, retry_after_sec)
+    _HOLDER = category
+
+
+def release() -> None:
+    """Release a slot acquired via try_acquire_or_503. Idempotent-safe in
+    finally clauses: a double-release on an unlocked lock raises
+    RuntimeError, so callers must pair acquire/release exactly once."""
+    global _HOLDER
+    _HOLDER = None
+    _LOCK.release()
 
 
 def is_busy() -> bool:
     """Snapshot of lock state — useful for diagnostics endpoints."""
     return _LOCK.locked()
+
+
+def current_holder() -> str | None:
+    """Which capability currently holds the slot, or None."""
+    return _HOLDER
