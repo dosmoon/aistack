@@ -46,13 +46,17 @@ _PROVIDER_TAG = "faster-whisper"
 
 
 def _resolve_device(device: str) -> str:
-    # "auto" intentionally defaults to CPU. Even when ctranslate2 reports
-    # CUDA devices, faster-whisper's encode() requires cublas64_12.dll +
-    # cuDNN at runtime — not bundled with the wheel. Users who actually
-    # have CUDA 12 + cuDNN installed must opt in explicitly with
-    # device="cuda" so we don't surprise the typical user with a missing
-    # DLL error mid-transcription.
+    # "auto" picks CUDA when torch reports it available — torch+cu121
+    # ships its own CUDA / cuDNN libs in torch/lib, which puts cublas
+    # within reach of ctranslate2's runtime loader. If torch is the
+    # CPU-only build (or import fails entirely), fall back to CPU.
     if device == "auto":
+        try:
+            import torch
+            if torch.cuda.is_available():
+                return "cuda"
+        except ImportError:
+            pass
         return "cpu"
     return device
 

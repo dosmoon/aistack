@@ -50,7 +50,11 @@ asr-parakeet = [
 ]
 asr-sensevoice = [
     "funasr==1.3.1",
-    "torchaudio==2.11.0",
+    # torchaudio is a hidden dep of funasr.utils.load_utils — `pip install
+    # funasr` alone does NOT pull it on Windows. Any reasonably current
+    # torchaudio works; we keep a floor (>=2.5) so the GPU upgrade path
+    # (torch 2.5.1+cu121 / torchaudio 2.5.1+cu121) is satisfied.
+    "torchaudio>=2.5",
     "soundfile",
 ]
 asr-all = [
