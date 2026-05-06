@@ -45,3 +45,6 @@ weights/
 logs/
 *.log
 runtime/
+
+# Scratch / dev-only one-shot scripts
+scratch/
