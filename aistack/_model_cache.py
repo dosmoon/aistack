@@ -56,11 +56,51 @@ def get(provider: str, key: Any) -> Any | None:
         return entry["model"]
 
 
-def put(provider: str, key: Any, model: Any) -> None:
-    """Record a freshly-loaded model. Starts the evictor on first call."""
+def put(provider: str, key: Any, model: Any, *,
+        category: str | None = None,
+        hot_swap_categories: tuple[str, ...] = ("asr-main",)) -> None:
+    """Record a freshly-loaded model. Starts the evictor on first call.
+
+    `category` tags the entry so the hot-swap policy can find peer entries.
+    When a category is one of `hot_swap_categories`, any other entry with
+    the same category is evicted before this one is inserted — VRAM is
+    always held by at most one peer in the swap-eligible category. This
+    is what protects 8 GB GPUs from triple-loading the ASR triplet.
+
+    The `asr-aux` tag (e.g. SenseVoice's small fsmn-vad) is intentionally
+    not in `hot_swap_categories` so a main-model swap does not evict the
+    helper model that the new active provider will need on its very next
+    call.
+    """
     composite = (provider, _hashable(key))
+    evicted: list[tuple] = []
     with _LOCK:
-        _CACHE[composite] = {"model": model, "last_used": time.monotonic()}
+        if category and category in hot_swap_categories:
+            for peer in list(_CACHE.keys()):
+                if peer == composite:
+                    continue
+                if _CACHE[peer].get("category") == category:
+                    del _CACHE[peer]
+                    evicted.append(peer)
+        _CACHE[composite] = {
+            "model": model,
+            "last_used": time.monotonic(),
+            "category": category,
+        }
+    if evicted:
+        # Free GPU/RAM held by displaced peers before the new model takes over.
+        gc.collect()
+        try:
+            import torch  # type: ignore
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
+        for peer_provider, peer_key in evicted:
+            logger.info(
+                "hot-swap evict provider=%s key=%s (loading %s/%s)",
+                peer_provider, peer_key, provider, _hashable(key),
+            )
     _ensure_evictor()
 
 
@@ -101,6 +141,7 @@ def stats() -> dict:
             items.append({
                 "provider": provider,
                 "key": str(key),
+                "category": entry.get("category"),
                 "idle_sec": int(now - entry["last_used"]),
             })
     return {

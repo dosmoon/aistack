@@ -104,7 +104,7 @@ def _get_vad_model(emit: Callable):
         disable_log=True,
         disable_pbar=True,
     )
-    _model_cache.put(_VAD_TAG, "fsmn-vad", model)
+    _model_cache.put(_VAD_TAG, "fsmn-vad", model, category="asr-aux")
     return model
 
 
@@ -120,7 +120,7 @@ def _get_sv_model(model_name: str, emit: Callable):
         disable_log=True,
         disable_pbar=True,
     )
-    _model_cache.put(_SV_TAG, model_name, model)
+    _model_cache.put(_SV_TAG, model_name, model, category="asr-main")
     emit("model_loaded", model=model_name, device="auto", compute_type="auto")
     return model
 

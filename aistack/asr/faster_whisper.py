@@ -78,7 +78,7 @@ def _get_model(model_name: str, device: str, compute_type: str,
          compute_type=compute_type)
     from faster_whisper import WhisperModel
     model = WhisperModel(model_name, device=device, compute_type=compute_type)
-    _model_cache.put(_PROVIDER_TAG, key, model)
+    _model_cache.put(_PROVIDER_TAG, key, model, category="asr-main")
     emit("model_loaded", model=model_name, device=device,
          compute_type=compute_type)
     return model

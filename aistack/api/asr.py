@@ -20,6 +20,7 @@ requires a missing library.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import shutil
@@ -29,6 +30,7 @@ from typing import Tuple
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse
 
+from aistack import _gpu_lock
 from aistack.asr import faster_whisper as _fw
 from aistack.asr import parakeet as _pk
 from aistack.asr import sensevoice as _sv
@@ -135,26 +137,40 @@ async def transcribe(
                 content=e.to_envelope(),
             )
 
+        # Single-task GPU policy: at most one ASR inference at a time on
+        # this aistack worker. Concurrent requests get HTTP 503 + Retry-
+        # After. The blocking transcribe() runs in a worker thread so the
+        # FastAPI event loop stays responsive (e.g. /health stays live).
         try:
-            result = module.transcribe(
-                audio_path,
-                language=language,
-                translate=translate,
-                **kwargs,
-            )
-        except AIError as e:
-            logger.warning("ASR provider error: %s", e)
-            return JSONResponse(
-                status_code=http_status_for(e.kind),
-                content=e.to_envelope(),
-            )
-        except Exception as e:
-            logger.exception("Unexpected ASR failure")
-            err = AIError(Kind.UNKNOWN, "aistack", f"Internal error: {e}", raw=e)
-            return JSONResponse(
-                status_code=http_status_for(err.kind),
-                content=err.to_envelope(),
-            )
+            with _gpu_lock.busy_or_503("asr"):
+                try:
+                    result = await asyncio.to_thread(
+                        module.transcribe,
+                        audio_path,
+                        language=language,
+                        translate=translate,
+                        **kwargs,
+                    )
+                except AIError as e:
+                    logger.warning("ASR provider error: %s", e)
+                    return JSONResponse(
+                        status_code=http_status_for(e.kind),
+                        content=e.to_envelope(),
+                    )
+                except Exception as e:
+                    logger.exception("Unexpected ASR failure")
+                    err = AIError(
+                        Kind.UNKNOWN, "aistack",
+                        f"Internal error: {e}", raw=e,
+                    )
+                    return JSONResponse(
+                        status_code=http_status_for(err.kind),
+                        content=err.to_envelope(),
+                    )
+        except HTTPException:
+            # 503 from busy_or_503 — let FastAPI render it; we still
+            # need to clean up the temp dir, which the outer finally does.
+            raise
 
         payload = _to_openai_response(result, response_format)
         if response_format == "text":

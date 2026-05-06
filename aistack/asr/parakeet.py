@@ -59,7 +59,7 @@ def _get_model(model_name: str, emit: Callable):
     model = ASRModel.from_pretrained(model_name=model_name)
     # Keep on whatever device NeMo picked (cuda if available, else cpu).
     model.eval()
-    _model_cache.put(_PROVIDER_TAG, model_name, model)
+    _model_cache.put(_PROVIDER_TAG, model_name, model, category="asr-main")
     device = _device_str(model)
     emit("model_loaded", model=model_name, device=device, compute_type="auto")
     return model
