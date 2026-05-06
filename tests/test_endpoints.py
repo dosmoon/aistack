@@ -69,6 +69,118 @@ def test_health(client):
     assert r.json()["status"] == "ok"
 
 
+def test_models_lists_known_shape(client):
+    """Contract test: /v1/models returns the OpenAI-shape envelope."""
+    r = client.get("/v1/models")
+    assert r.status_code == 200
+    body = r.json()
+    assert body.get("object") == "list"
+    assert isinstance(body.get("data"), list)
+    for entry in body["data"]:
+        assert entry.get("object") == "model"
+        assert isinstance(entry.get("id"), str) and entry["id"]
+        assert isinstance(entry.get("owned_by"), str)
+        caps = entry.get("capabilities")
+        assert isinstance(caps, list) and caps, (
+            f"every entry must declare non-empty capabilities[]; got: {entry}"
+        )
+        assert all(c in ("asr", "tts", "llm") for c in caps), (
+            f"unexpected capability values: {caps}"
+        )
+
+
+def test_models_asr_entries_carry_languages(client):
+    """Contract test: every real ASR entry carries a `languages` array.
+
+    The auto routing alias is exempt — its languages are dynamically
+    determined by what's installed at request time. Real ASR entries
+    must declare their supported language set so language-aware pickers
+    can filter without baking a per-backend table client-side.
+    """
+    r = client.get("/v1/models")
+    body = r.json()
+    asr_real = [
+        e for e in body["data"]
+        if "asr" in (e.get("capabilities") or [])
+        and not e.get("is_routing_alias")
+    ]
+    if not asr_real:
+        pytest.skip("no real ASR backends installed")
+    for entry in asr_real:
+        langs = entry.get("languages")
+        assert isinstance(langs, list) and langs, (
+            f"ASR entry missing non-empty languages[]: {entry}"
+        )
+        # ISO 639-1 codes are 2-3 letters lowercase; sanity-check shape.
+        for code in langs:
+            assert isinstance(code, str) and 2 <= len(code) <= 3 and code.islower(), (
+                f"language code looks malformed: {code!r} in {entry['id']}"
+            )
+
+
+def test_models_includes_auto_routing_alias_when_asr_available(client):
+    """Contract test: when ≥1 ASR backend is reachable, the `auto` routing
+    alias is present and marked with is_routing_alias=true.
+
+    aistack's smart-routing capability must be discoverable from the
+    inventory; a consumer should not have to read prose docs to learn
+    that "auto" is a valid model id.
+    """
+    r = client.get("/v1/models")
+    body = r.json()
+    asr_real = [
+        e for e in body["data"]
+        if "asr" in (e.get("capabilities") or [])
+        and not e.get("is_routing_alias")
+    ]
+    if not asr_real:
+        pytest.skip("no real ASR backends installed; auto would have nothing to route to")
+
+    auto_entries = [e for e in body["data"] if e.get("id") == "auto"]
+    assert auto_entries, (
+        "expected an 'auto' routing-alias entry alongside real ASR entries"
+    )
+    assert len(auto_entries) == 1, "auto should appear exactly once"
+    auto = auto_entries[0]
+    assert auto.get("is_routing_alias") is True
+    assert auto.get("capabilities") == ["asr"]
+    # languages is intentionally absent on the alias — its routing
+    # decision is per-request based on the language hint.
+    assert "languages" not in auto, (
+        "routing alias should not advertise a fixed languages set"
+    )
+
+
+def test_models_languages_match_known_backend_coverage(client):
+    """Contract test: when SenseVoice is installed, its languages list
+    contains the documented CJK + en/ja/ko set; when Parakeet is
+    installed, its list contains the 25 European languages plus en.
+
+    Catches accidental edits to the language tables that would break
+    language-aware picker filtering downstream.
+    """
+    r = client.get("/v1/models")
+    body = r.json()
+    by_id = {e["id"]: e for e in body["data"]}
+
+    sv = by_id.get("iic/SenseVoiceSmall")
+    if sv is not None:
+        langs = set(sv["languages"])
+        # Documented coverage per docs/api/models.md.
+        for code in ("zh", "yue", "en", "ja", "ko"):
+            assert code in langs, (
+                f"SenseVoice should advertise {code!r}; saw: {sv['languages']}"
+            )
+
+    pk = by_id.get("nvidia/parakeet-tdt-0.6b-v3")
+    if pk is not None:
+        langs = set(pk["languages"])
+        for code in ("en", "fr", "de", "es", "ru", "uk"):
+            assert code in langs, (
+                f"Parakeet should advertise {code!r}; saw: {pk['languages']}"
+            )
+
+
 def test_llm_returns_503_when_slot_busy(client, fake_ollama):
     """If ASR is mid-flight (slot held), an LLM request must 503 immediately
     instead of forwarding to Ollama. This is the cross-capability claim."""
