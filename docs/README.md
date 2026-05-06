@@ -12,6 +12,7 @@ Model selection rationales — research notes that informed *which* models aista
 - **[asr.md](selection/asr.md)** — Why faster-whisper + Parakeet + SenseVoice form the ASR triplet. *Migrated from VideoCraft.*
 - **[tts.md](selection/tts.md)** — Why Qwen3-TTS-12Hz-0.6B-CustomVoice via vLLM-Omni won the TTS slot. *Migrated from VideoCraft.*
 - **[llm-rationale.md](selection/llm-rationale.md)** — Historical record of the local LLM evaluation that led to the conclusion *"don't build LLM into aistack — Ollama already nails it"*. *Migrated from VideoCraft.*
+- **[runtimes.md](selection/runtimes.md)** — Per-provider ML runtime breakdown (CTranslate2 / NeMo / FunASR / vLLM-Omni), cache-directory mapping, install pitfalls, and why we tolerate NeMo's heavy dependency stack.
 
 ## progress/
 

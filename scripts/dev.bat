@@ -14,11 +14,19 @@ if not exist "%PY%" (
     exit /b 1
 )
 
-REM Point HuggingFace cache at the shared model dir so faster-whisper /
-REM other ASR backends find pre-downloaded weights instead of re-pulling
-REM into %USERPROFILE%\.cache\huggingface.
+REM Point each runtime's model cache at the shared D:\AI_Models tree so
+REM ASR backends find pre-downloaded weights instead of re-pulling GBs
+REM into %USERPROFILE%\.cache\<vendor>. See docs/selection/runtimes.md
+REM for the full mapping (HF -> faster-whisper / Parakeet / Qwen3-TTS,
+REM ModelScope -> SenseVoice).
 if "%HF_HOME%"=="" (
     set HF_HOME=D:\AI_Models\hf
+)
+if "%MODELSCOPE_CACHE%"=="" (
+    set MODELSCOPE_CACHE=D:\AI_Models\modelscope
+)
+if "%NEMO_CACHE_DIR%"=="" (
+    set NEMO_CACHE_DIR=D:\AI_Models\nemo
 )
 
 cd /d "%REPO_ROOT%"
