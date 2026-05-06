@@ -17,6 +17,72 @@ heavy import path.
 | **SenseVoice** | iic/SenseVoiceSmall | Alibaba FunASR + ModelScope | `MODELSCOPE_CACHE/models/iic/` | ~1 GB Python deps |
 | **Qwen3-TTS** | Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice | vLLM-Omni inside a Docker container | `HF_HOME/hub/` (mounted into the container) | ~9 GB container image |
 
+## GPU vs CPU
+
+By default `pip install -e .[asr-*]` lands on CPU-only PyTorch from the
+public PyPI mirror (`torch==2.10.0+cpu`). All three ASR providers will
+run on CPU; CTranslate2 is the lightest of them, NeMo and FunASR are
+heavier on CPU.
+
+To enable GPU inference, force-reinstall PyTorch from NVIDIA's CUDA
+index:
+
+```bash
+uv pip install --python myenv/Scripts/python.exe \
+    --index-url https://download.pytorch.org/whl/cu121 \
+    --reinstall-package torch --reinstall-package torchaudio \
+    torch torchaudio
+```
+
+This pulls `torch==2.5.1+cu121` and `torchaudio==2.5.1+cu121`. The
+torch wheel ships its own CUDA runtime + cuDNN libs, so no system-wide
+CUDA Toolkit install is needed beyond a recent NVIDIA driver. Once
+installed:
+
+- `faster-whisper`'s `_resolve_device("auto")` returns `"cuda"` when
+  `torch.cuda.is_available()`, automatically opting in.
+- `NeMo` (`Parakeet`) auto-detects CUDA inside `from_pretrained()`.
+- `FunASR` (`SenseVoice`) auto-detects CUDA inside `AutoModel(...)`.
+
+### Benchmarks (RTX 4060 Laptop, 8 GB VRAM, 201s English news audio)
+
+| Engine | CPU wall | GPU cold | GPU warm | Speedup (warm) |
+|---|---|---|---|---|
+| faster-whisper-small | 93s | 14.3s | ~10s | ~9× |
+| Parakeet TDT 0.6B | 57s | 25.1s | **2.08s** | ~27× (RTF 0.01) |
+| SenseVoice Small | 27s | 19.8s | 5.98s | ~4.5× |
+
+GPU cold start time is dominated by the model load itself, not first
+inference. After the first call the model stays resident in VRAM until
+the [model cache](../design/architecture.md) evicts it on idle.
+
+### 8 GB VRAM constraint
+
+Loading all three ASR models into GPU together consumes ~5.5 GB; their
+inference workspaces (cuDNN, CUDA Graph capture, transducer KV) push
+peak usage past 8 GB on this hardware. Rapid back-to-back tests across
+all three providers within a single 5-minute idle window will trigger a
+CUDA OOM and the entire uvicorn worker crashes.
+
+In normal usage a session targets one provider per language (English ->
+Parakeet, CJK -> SenseVoice, fallback -> faster-whisper), so all three
+loaded simultaneously is rare. Mitigation strategies for users who do
+hit this:
+
+- **Lower keep_alive**: set `AISTACK_MODEL_KEEP_ALIVE_SEC=60` so the
+  cache evicts more aggressively. Trade-off: more cold-start latency.
+- **Stick to CPU for one provider**: e.g. keep Parakeet on CPU (still
+  RTF 0.07) and only push faster-whisper / SenseVoice to GPU. Requires
+  per-provider device override (not yet implemented).
+- **Active-set cache limit**: aistack-side change to allow at most one
+  ASR model resident per category, hot-swapping on demand. Tracked as a
+  follow-up; design notes pending.
+
+If `Qwen3-TTS` is also active inside its Docker sidecar (claims ~6.4 GB
+when `gpu_memory_utilization=0.80`), there is effectively no room for
+ASR on GPU at all — drop the TTS container's mem fraction or accept
+that ASR runs CPU-only when TTS is hot.
+
 ## Cache directory mapping
 
 Set as environment variables before any ML library is imported. `scripts/dev.bat`
