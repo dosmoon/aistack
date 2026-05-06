@@ -18,10 +18,10 @@ import os
 import shutil
 import subprocess
 import tempfile
-import threading
 import time
 from typing import Callable
 
+from aistack import _model_cache
 from aistack.errors import AIError, Kind
 
 
@@ -37,19 +37,16 @@ SUPPORTED_LANGUAGES = (
 )
 
 
-# ── Model cache ──────────────────────────────────────────────────────────────
-# NeMo's ASRModel.from_pretrained() does its own internal cache, but the
-# Python object itself is multi-GB to instantiate. Cache per-process.
+# Model caching is delegated to aistack._model_cache, which evicts entries
+# idle longer than AISTACK_MODEL_KEEP_ALIVE_SEC (default 300s).
 
-_MODEL_CACHE: dict[str, object] = {}
-_MODEL_CACHE_LOCK = threading.Lock()
+_PROVIDER_TAG = "parakeet"
 
 
 def _get_model(model_name: str, emit: Callable):
-    with _MODEL_CACHE_LOCK:
-        cached = _MODEL_CACHE.get(model_name)
-        if cached is not None:
-            return cached
+    cached = _model_cache.get(_PROVIDER_TAG, model_name)
+    if cached is not None:
+        return cached
     emit("model_loading", model=model_name, device="auto", compute_type="auto")
     try:
         from nemo.collections.asr.models import ASRModel
@@ -62,8 +59,7 @@ def _get_model(model_name: str, emit: Callable):
     model = ASRModel.from_pretrained(model_name=model_name)
     # Keep on whatever device NeMo picked (cuda if available, else cpu).
     model.eval()
-    with _MODEL_CACHE_LOCK:
-        _MODEL_CACHE[model_name] = model
+    _model_cache.put(_PROVIDER_TAG, model_name, model)
     device = _device_str(model)
     emit("model_loaded", model=model_name, device=device, compute_type="auto")
     return model

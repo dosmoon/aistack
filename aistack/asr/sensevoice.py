@@ -36,10 +36,10 @@ import re
 import shutil
 import subprocess
 import tempfile
-import threading
 import time
 from typing import Callable
 
+from aistack import _model_cache
 from aistack.errors import AIError, Kind
 
 
@@ -75,18 +75,20 @@ _SOFT_PUNCT   = {"，", "、", "；", ":", ",", ";"}
 
 
 # ── Model cache ──────────────────────────────────────────────────────────────
+# Caching is delegated to aistack._model_cache, which evicts entries idle
+# longer than AISTACK_MODEL_KEEP_ALIVE_SEC (default 300s). VAD and SV models
+# are cached as separate entries under different provider tags so an idle
+# SV does not also free the VAD instance (which is small and used by every
+# call regardless of which SV size is active).
 
-_VAD_MODEL = None
-_VAD_LOCK = threading.Lock()
-_SV_CACHE: dict[str, object] = {}
-_SV_LOCK = threading.Lock()
+_VAD_TAG = "sensevoice-vad"
+_SV_TAG  = "sensevoice"
 
 
 def _get_vad_model(emit: Callable):
-    global _VAD_MODEL
-    with _VAD_LOCK:
-        if _VAD_MODEL is not None:
-            return _VAD_MODEL
+    cached = _model_cache.get(_VAD_TAG, "fsmn-vad")
+    if cached is not None:
+        return cached
     emit("model_loading", model="fsmn-vad", device="auto", compute_type="auto")
     try:
         from funasr import AutoModel
@@ -102,16 +104,14 @@ def _get_vad_model(emit: Callable):
         disable_log=True,
         disable_pbar=True,
     )
-    with _VAD_LOCK:
-        _VAD_MODEL = model
+    _model_cache.put(_VAD_TAG, "fsmn-vad", model)
     return model
 
 
 def _get_sv_model(model_name: str, emit: Callable):
-    with _SV_LOCK:
-        cached = _SV_CACHE.get(model_name)
-        if cached is not None:
-            return cached
+    cached = _model_cache.get(_SV_TAG, model_name)
+    if cached is not None:
+        return cached
     emit("model_loading", model=model_name, device="auto", compute_type="auto")
     from funasr import AutoModel
     model = AutoModel(
@@ -120,8 +120,7 @@ def _get_sv_model(model_name: str, emit: Callable):
         disable_log=True,
         disable_pbar=True,
     )
-    with _SV_LOCK:
-        _SV_CACHE[model_name] = model
+    _model_cache.put(_SV_TAG, model_name, model)
     emit("model_loaded", model=model_name, device="auto", compute_type="auto")
     return model
 

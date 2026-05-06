@@ -13,10 +13,10 @@ transcriptions in the same session don't re-load weights.
 """
 
 import os
-import threading
 import time
 from typing import Callable
 
+from aistack import _model_cache
 from aistack.errors import AIError, Kind
 
 
@@ -39,13 +39,10 @@ def _resolve_language(language: str | None) -> str | None:
 EventCallback = Callable[..., None]
 
 
-# ── Model cache ──────────────────────────────────────────────────────────────
-# Loading a Whisper model is expensive (download on cold start, plus a few
-# seconds to map weights even when cached). We keep a process-wide cache so
-# back-to-back transcriptions reuse the same instance.
+# Model caching is delegated to aistack._model_cache, which evicts entries
+# idle longer than AISTACK_MODEL_KEEP_ALIVE_SEC (default 300s).
 
-_MODEL_CACHE: dict[tuple, object] = {}
-_MODEL_CACHE_LOCK = threading.Lock()
+_PROVIDER_TAG = "faster-whisper"
 
 
 def _resolve_device(device: str) -> str:
@@ -70,16 +67,14 @@ def _resolve_compute_type(compute_type: str, device: str) -> str:
 def _get_model(model_name: str, device: str, compute_type: str,
                emit: Callable):
     key = (model_name, device, compute_type)
-    with _MODEL_CACHE_LOCK:
-        cached = _MODEL_CACHE.get(key)
-        if cached is not None:
-            return cached
+    cached = _model_cache.get(_PROVIDER_TAG, key)
+    if cached is not None:
+        return cached
     emit("model_loading", model=model_name, device=device,
          compute_type=compute_type)
     from faster_whisper import WhisperModel
     model = WhisperModel(model_name, device=device, compute_type=compute_type)
-    with _MODEL_CACHE_LOCK:
-        _MODEL_CACHE[key] = model
+    _model_cache.put(_PROVIDER_TAG, key, model)
     emit("model_loaded", model=model_name, device=device,
          compute_type=compute_type)
     return model
