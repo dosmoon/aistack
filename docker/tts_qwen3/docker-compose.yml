@@ -1,0 +1,41 @@
+# Qwen3-TTS via vLLM-Omni (official path).
+# vLLM-Omni provides an OpenAI-compatible /v1/audio/speech endpoint with
+# all paper-grade optimizations (torch.compile, CUDA Graph, triton kernels).
+#
+# This container is bound to 127.0.0.1:17860 (host-only) and is intended
+# to sit behind the aistack FastAPI front door at port 11500. End users
+# of aistack should never talk to 17860 directly.
+services:
+  qwen3-tts:
+    image: vllm/vllm-omni:v0.18.0
+    container_name: aistack-qwen3-tts
+    ipc: host  # vLLM needs SHMEM > 64MB
+    ports:
+      - "127.0.0.1:17860:8091"  # host-only; aistack FastAPI proxies here
+    volumes:
+      - "D:/AI_Models/hf:/root/.cache/huggingface"
+    environment:
+      HF_HUB_OFFLINE: "0"
+    command:
+      - "vllm"
+      - "serve"
+      - "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+      - "--omni"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8091"
+      - "--dtype"
+      - "bfloat16"
+      - "--gpu-memory-utilization"
+      - "0.80"   # production-safe with 8GB VRAM (~440MB desktop baseline)
+      - "--max-model-len"
+      - "4096"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped

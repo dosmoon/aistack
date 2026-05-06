@@ -1,18 +1,22 @@
 """FastAPI application entry point.
 
-Skeleton only — D1 phase. ASR and TTS endpoints will be wired in D2/D3
-once their respective providers are migrated from VideoCraft.
+D2 phase: TTS is wired (proxy to Qwen3-TTS via vLLM-Omni).
+ASR routes will land in D3.
 """
 
 from fastapi import FastAPI
 
 from aistack import __version__
+from aistack.api import tts as tts_api
+from aistack.tts import qwen3 as tts_qwen3
 
 app = FastAPI(
     title="aistack",
     version=__version__,
     description="Localhost AI service for ASR and TTS (OpenAI-API-compatible).",
 )
+
+app.include_router(tts_api.router)
 
 
 @app.get("/health")
@@ -21,6 +25,19 @@ def health() -> dict:
 
 
 @app.get("/v1/models")
-def list_models() -> dict:
-    # OpenAI-compatible empty list. Will be populated once providers are loaded.
-    return {"object": "list", "data": []}
+async def list_models() -> dict:
+    """OpenAI-compatible model list. Each model entry reflects an upstream
+    backend that is currently reachable; unreachable backends are omitted
+    so the client can detect missing services via empty / smaller listings.
+    """
+    data: list[dict] = []
+    if await tts_qwen3.is_healthy():
+        data.append(
+            {
+                "id": tts_qwen3.MODEL_ID,
+                "object": "model",
+                "owned_by": "qwen",
+                "capabilities": ["tts"],
+            }
+        )
+    return {"object": "list", "data": data}
