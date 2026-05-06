@@ -14,6 +14,7 @@ audio, so we transcode via ffmpeg into a temp WAV before inference.
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
@@ -24,8 +25,33 @@ from typing import Callable
 from aistack import _model_cache
 from aistack.errors import AIError, Kind
 
+logger = logging.getLogger("aistack.asr.parakeet")
+
 
 EventCallback = Callable[..., None]
+
+
+# Attention-mode policy on consumer GPUs.
+#
+# Parakeet TDT v3 ships with full self-attention (rel_pos) by default, which
+# is O(N^2) in audio length and treats audio under ~24 min on an A100 80GB
+# as a single pass. On 8 GB consumer cards this OOMs the process around the
+# 2-3 minute mark and on Windows the failure surfaces as a downstream temp-
+# file race ("[WinError 32] manifest.json"), not a clean OOM.
+#
+# NeMo exposes `change_attention_model("rel_pos_local_attn", att_context_size)`
+# which switches the encoder to a Longformer-style local attention pattern.
+# Memory becomes O(N * context_size) — linear in audio length — at the cost
+# of ~1-3% WER (the model loses access to global context). For an aistack
+# gateway running on 8 GB hardware that is the correct trade-off: any audio
+# length works, accuracy still beats faster-whisper-small on English.
+#
+# Power users can opt back into full attention via env var when running on
+# bigger cards. att_context_size is also configurable; 256 frames on each
+# side at the model's 80 ms-per-frame rate is ~20 s of context, which is
+# what NVIDIA's HuggingFace model card recommends.
+_ATTENTION_MODE = os.environ.get("AISTACK_PARAKEET_ATTENTION_MODE", "local").lower()
+_ATT_CONTEXT_SIZE = os.environ.get("AISTACK_PARAKEET_ATT_CONTEXT_SIZE", "256,256")
 
 
 # Parakeet TDT v3 supports these 25 languages (plus English) — used by the
@@ -57,12 +83,56 @@ def _get_model(model_name: str, emit: Callable):
             raw=e,
         ) from e
     model = ASRModel.from_pretrained(model_name=model_name)
+    _maybe_switch_to_local_attention(model)
     # Keep on whatever device NeMo picked (cuda if available, else cpu).
     model.eval()
     _model_cache.put(_PROVIDER_TAG, model_name, model, category="asr-main")
     device = _device_str(model)
     emit("model_loaded", model=model_name, device=device, compute_type="auto")
     return model
+
+
+def _maybe_switch_to_local_attention(model) -> None:
+    """Switch the encoder to local attention if AISTACK_PARAKEET_ATTENTION_MODE
+    is "local" (the default).
+
+    Best-effort: if the loaded model class lacks change_attention_model
+    (older NeMo, or a checkpoint that wasn't built on FastConformer), we
+    log a warning and keep going on whatever the model's default attention
+    mode is. The request will still run; it just may OOM on long audio.
+    """
+    if _ATTENTION_MODE != "local":
+        logger.info(
+            "Parakeet attention mode = %r (env override); leaving full attention",
+            _ATTENTION_MODE,
+        )
+        return
+    try:
+        l, r = (int(x.strip()) for x in _ATT_CONTEXT_SIZE.split(",", 1))
+    except ValueError:
+        logger.warning(
+            "Invalid AISTACK_PARAKEET_ATT_CONTEXT_SIZE=%r; falling back to 256,256",
+            _ATT_CONTEXT_SIZE,
+        )
+        l, r = 256, 256
+    change = getattr(model, "change_attention_model", None)
+    if not callable(change):
+        logger.warning(
+            "model.change_attention_model not available; staying on default "
+            "full attention (long audio may OOM on 8 GB cards)"
+        )
+        return
+    try:
+        change(self_attention_model="rel_pos_local_attn", att_context_size=[l, r])
+        logger.info(
+            "Parakeet switched to local attention att_context_size=[%d,%d] "
+            "(O(N) memory; ~1-3%% WER trade vs full attention)", l, r,
+        )
+    except Exception as e:
+        logger.warning(
+            "change_attention_model failed (%s: %s); staying on default attention",
+            type(e).__name__, e,
+        )
 
 
 def _device_str(model) -> str:
@@ -198,9 +268,22 @@ def transcribe(
         try:
             # NeMo 2.x: transcribe() returns list of Hypothesis with .text
             # and .timestamp = {'word': [...], 'segment': [...], 'char': [...]}
-            results = model.transcribe([wav_path], timestamps=True)
+            #
+            # num_workers=0 disables PyTorch DataLoader subprocess spawning.
+            # On Windows this prevents WinError 32 races where DataLoader
+            # worker subprocesses try to read NeMo's internal temp manifest
+            # before its writer has flushed/closed. NeMo's own example
+            # examples/asr/transcribe_speech.py defaults num_workers to 0
+            # for the same reason. batch_size=1 matches our request-at-a-
+            # time gateway: there is no batching benefit when each transcribe
+            # call services exactly one audio file.
+            results = model.transcribe(
+                [wav_path], timestamps=True, num_workers=0, batch_size=1,
+            )
         except TypeError:
-            # Older NeMo versions don't accept timestamps kwarg.
+            # Older NeMo versions may not accept all of these kwargs. Drop
+            # to a plain call so the request still succeeds — the Windows
+            # temp-file race risk reappears but only some versions hit it.
             results = model.transcribe([wav_path])
         except Exception as e:
             raise AIError(Kind.UNKNOWN, "Parakeet",
