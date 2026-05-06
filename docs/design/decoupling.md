@@ -1,11 +1,13 @@
 > **迁移说明**: 本文档于 2026-05-06 从 VideoCraft 仓库 (`docs/draft/local-ai-decoupling.md`) 迁移而来。aistack 拆分独立 repo 后,此文档作为 aistack 设计的驱动文档归档于此,VideoCraft 端的副本保留为快照,**不再是 source of truth**。
+>
+> **修订说明 (2026-05-06 当日 D6 启动时)**: 本文档原本把 aistack 范围定为"ASR + TTS,**不做 LLM**"。该决定在 D6 阶段被修订:aistack 仍然不**自实现** LLM 推理(Ollama 继续负责),但要**做 LLM 调度网关**——所有本地 LLM 后端通过 aistack 暴露给客户端,以便 aistack 统一调度本地 GPU。详见 `architecture.md` (定位 = AI capability gateway) 和本档 §11。原始的"不做 LLM"段落保留作为历史决策档案,不应再视为权威指南。
 
 # 本地 AI 服务化解耦设计草稿
 
-> Status: **草稿 / 讨论中**
+> Status: **D6 启动后部分章节已被 architecture.md 取代**(范围定义)
 > Created: 2026-05-06
-> Owner: VideoCraft 主仓 + 待建的独立 repo
-> 关联记忆: `project_local_ai_phase.md` `project_local_tts_docker.md` `refactor_architecture.md`
+> Owner: aistack repo
+> 关联记忆: `project_aistack.md` `project_local_ai_phase.md` `project_local_tts_docker.md` `refactor_architecture.md`
 
 ---
 
@@ -167,4 +169,46 @@ aistack 的定位是 **「填补开源模型有了、但没有像 Ollama 那样�
 
 ---
 
-> 后续推进基于本草稿。讨论结论直接 in-place 修订；定稿后改名 `local-ai-decoupling.md` 移出 draft 或转为正式 design doc。
+## 11. 修订（2026-05-06 当日）：aistack 定位升级为 AI capability gateway
+
+### 触发
+
+D5 完工(VideoCraft 完成切到 HTTP)后,讨论"如何让 aistack 在 8GB GPU 上稳"导致一连串 OOM 现实问题:
+
+- ASR 三引擎同时驻留 → 5.5GB → workspace 推理时 OOM
+- ASR 完成后 5 分钟 idle 才释放 → 用户立刻发 Ollama 翻译 → 显存还压着 → 撞车
+
+最初的修复思路是"让 VideoCraft 主动调 aistack 的 cache 释放接口、传 keep_alive=0",但被用户否定:**"VideoCraft 调用本地 AI 能力,为何要关心本地 AI 服务的资源调度?"** 这个反问把整个问题暴露了——如果 VideoCraft 必须知道 aistack 内部状态、必须按特定顺序调接口才不会崩,aistack 就不是真正的抽象层。
+
+### 修订后的定位
+
+aistack = **本地 AI capability gateway**(而非"本地 AI 服务")。
+
+- 客户端永远只看到一个稳定的 OpenAI 兼容 API,不知道也不关心后面是哪个引擎、占多少显存、跟谁竞争 GPU
+- aistack 的核心职责包含 **统一调度本地 GPU 资源**;为做到这点,所有用本地 GPU 的能力必须从 aistack 这扇门进出
+- 因此 LLM 推理虽然仍由 Ollama 负责,**调度入口必须收回到 aistack**——通过反向代理 Ollama 实现
+
+详细新定位见 `architecture.md`,本节不再重复。
+
+### 受影响的旧决策
+
+| 原决策(§2.2) | 修订后 |
+|---|---|
+| "aistack 不做 LLM" | "aistack 不做 LLM **推理**,但做 LLM **调度网关**(代理 Ollama)" |
+| VideoCraft 的 LLM provider `base_url=localhost:11434/v1` | VideoCraft 的 Ollama provider `base_url=localhost:11500/v1` |
+| 云 LLM (DeepSeek/Claude/Gemini) 经 VideoCraft 直连 | **不变**——云端无本地资源成本,过 aistack 没价值 |
+
+### 长期愿景
+
+定位升级后,aistack 自然能演进成多机/混合云调度网关:
+
+- 现在: 本机 GPU + 本机 Ollama + 本机 Docker
+- 下一步: 本地多模型 GPU 智能调度(D6 在做)
+- 局域网阶段: 加局域网另一台机器的 4090,fan out
+- 云租用阶段: RunPod / Lambda Labs 按需开关
+
+每一步 VideoCraft 等客户端**零改动**,这正是 abstraction layer 该有的演进路径。
+
+---
+
+> 历史草稿到此结束。后续设计变更直接维护 `architecture.md`,本档保留为决策档案。
