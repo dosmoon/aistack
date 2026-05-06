@@ -25,6 +25,7 @@ dependencies = [
     "pydantic>=2.5",
     "httpx>=0.26",
     "python-multipart>=0.0.9",  # required by FastAPI for multipart/form-data uploads
+    "jinja2>=3.1",  # /admin Web UI templates
 ]
 
 [project.optional-dependencies]

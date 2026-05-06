@@ -1,0 +1,17 @@
+{% if not gpu.available %}
+  <p class="empty">No GPU stats — {{ gpu.reason }}</p>
+{% else %}
+  <p style="margin: 0 0 0.4rem 0;"><strong>{{ gpu.device }}</strong></p>
+  {% set used_pct = (gpu.used_mb / gpu.total_mb * 100) | round(1) %}
+  <div class="meter"><span style="width: {{ used_pct }}%"></span></div>
+  <table style="margin-top: 0.6rem;">
+    <tr><th>used (whole device)</th><td>{{ gpu.used_mb }} MB / {{ gpu.total_mb }} MB ({{ used_pct }}%)</td></tr>
+    <tr><th>free</th><td>{{ gpu.free_mb }} MB</td></tr>
+    <tr><th>torch allocated (this proc)</th><td>{{ gpu.allocated_mb }} MB</td></tr>
+    <tr><th>torch reserved (this proc)</th><td>{{ gpu.reserved_mb }} MB</td></tr>
+  </table>
+  <p class="empty" style="margin-top: 0.6rem;">
+    "Used (whole device)" includes the Qwen3-TTS Docker container's
+    resident reservation and any other GPU process on the host.
+  </p>
+{% endif %}

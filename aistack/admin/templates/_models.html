@@ -1,0 +1,22 @@
+{% if not models %}
+  <p class="empty">No backends reachable. Check Ollama, the TTS Docker container, and ASR extras.</p>
+{% else %}
+  <table>
+    <thead>
+      <tr><th>Model id</th><th>Owner</th><th>Capabilities</th></tr>
+    </thead>
+    <tbody>
+      {% for m in models %}
+        <tr>
+          <td><code>{{ m.id }}</code></td>
+          <td>{{ m.owned_by }}</td>
+          <td>
+            {% for cap in m.capabilities %}
+              <span class="badge badge-{{ cap }}">{{ cap }}</span>
+            {% endfor %}
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endif %}

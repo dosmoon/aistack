@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>aistack admin</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!--
+    HTMX from unpkg with SRI. If the page is opened offline, HTMX won't
+    load and the live-refresh fragments stay frozen on their initial
+    render — but the static page still tells you what was true at first
+    paint, which is good enough for a "did the worker die" check.
+  -->
+  <script src="https://unpkg.com/htmx.org@1.9.12/dist/htmx.min.js"
+          integrity="sha384-ujb1lZYygJmzgSwoxRggbCHcjc0rB2XoQrxeTUQyRjrOnlCoYta87iKBWq3EsdM2"
+          crossorigin="anonymous"></script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+           margin: 0; padding: 1.5rem 2rem; background: #f5f6f7; color: #222; }
+    h1 { margin: 0 0 0.5rem 0; font-size: 1.5rem; }
+    .subtitle { color: #666; font-size: 0.9rem; margin-bottom: 1.5rem; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    .card { background: #fff; border: 1px solid #ddd; border-radius: 6px;
+            padding: 1rem 1.25rem; }
+    .card h2 { margin: 0 0 0.75rem 0; font-size: 1rem; color: #333;
+               border-bottom: 1px solid #eee; padding-bottom: 0.4rem; }
+    .full { grid-column: 1 / -1; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+    th, td { text-align: left; padding: 0.3rem 0.5rem; border-bottom: 1px solid #f0f0f0; }
+    th { color: #666; font-weight: 600; }
+    .badge { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 10px;
+             font-size: 0.75rem; font-weight: 600; }
+    .badge-asr  { background: #e3f0ff; color: #0a5fb1; }
+    .badge-tts  { background: #fce8f0; color: #b1075f; }
+    .badge-llm  { background: #e6f7ec; color: #0f7a2e; }
+    .badge-busy { background: #fff3cd; color: #856404; }
+    .badge-idle { background: #e9ecef; color: #495057; }
+    .empty { color: #999; font-style: italic; }
+    pre.logs { background: #1e1e1e; color: #ddd; font-family: ui-monospace, Consolas, monospace;
+               font-size: 0.78rem; max-height: 22rem; overflow: auto;
+               padding: 0.6rem 0.8rem; border-radius: 4px; margin: 0; }
+    .meter { height: 0.4rem; background: #e9ecef; border-radius: 3px; overflow: hidden; }
+    .meter > span { display: block; height: 100%; background: #0a5fb1; }
+    .footer { margin-top: 1.5rem; color: #aaa; font-size: 0.78rem; }
+  </style>
+</head>
+<body>
+  <h1>aistack admin</h1>
+  <div class="subtitle">live snapshot of the local AI capability gateway · auto-refreshes every 2s</div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>GPU slot</h2>
+      <div hx-get="/admin/fragments/lock"
+           hx-trigger="load, every 2s"
+           hx-swap="innerHTML">loading…</div>
+    </div>
+
+    <div class="card">
+      <h2>GPU memory</h2>
+      <div hx-get="/admin/fragments/gpu"
+           hx-trigger="load, every 2s"
+           hx-swap="innerHTML">loading…</div>
+    </div>
+
+    <div class="card full">
+      <h2>Models inventory</h2>
+      <div hx-get="/admin/fragments/models"
+           hx-trigger="load, every 5s"
+           hx-swap="innerHTML">loading…</div>
+    </div>
+
+    <div class="card full">
+      <h2>Model cache</h2>
+      <div hx-get="/admin/fragments/cache"
+           hx-trigger="load, every 2s"
+           hx-swap="innerHTML">loading…</div>
+    </div>
+
+    <div class="card full">
+      <h2>Recent logs</h2>
+      <div hx-get="/admin/fragments/logs"
+           hx-trigger="load, every 2s"
+           hx-swap="innerHTML">loading…</div>
+    </div>
+  </div>
+
+  <div class="footer">
+    aistack · read-only dashboard · install/uninstall not yet wired
+  </div>
+</body>
+</html>

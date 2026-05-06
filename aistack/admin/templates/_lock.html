@@ -1,0 +1,13 @@
+{% if busy %}
+  <p>
+    <span class="badge badge-busy">BUSY</span>
+    held by <strong>{{ holder or "unknown" }}</strong>
+  </p>
+  <p class="empty">Concurrent requests will receive HTTP 503 + Retry-After.</p>
+{% else %}
+  <p>
+    <span class="badge badge-idle">IDLE</span>
+    slot free
+  </p>
+  <p class="empty">Next inference request takes the slot immediately.</p>
+{% endif %}

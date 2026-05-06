@@ -1,0 +1,6 @@
+{% if not lines %}
+  <p class="empty">No log lines buffered yet.</p>
+{% else %}
+  <pre class="logs">{% for line in lines %}{{ line }}
+{% endfor %}</pre>
+{% endif %}

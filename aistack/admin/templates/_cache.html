@@ -1,0 +1,23 @@
+{% if not cache.loaded %}
+  <p class="empty">No models currently resident in cache.</p>
+  <p class="empty">keep_alive = {{ cache.keep_alive_sec }}s · scan = {{ cache.scan_interval_sec }}s</p>
+{% else %}
+  <table>
+    <thead>
+      <tr><th>Provider</th><th>Key</th><th>Category</th><th>Idle</th></tr>
+    </thead>
+    <tbody>
+      {% for entry in cache.loaded %}
+        <tr>
+          <td>{{ entry.provider }}</td>
+          <td><code>{{ entry.key }}</code></td>
+          <td>{{ entry.category or "—" }}</td>
+          <td>{{ entry.idle_sec }}s</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="empty" style="margin-top: 0.6rem;">
+    Idle entries past keep_alive ({{ cache.keep_alive_sec }}s) are evicted by the background scanner.
+  </p>
+{% endif %}

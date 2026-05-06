@@ -11,6 +11,8 @@ from fastapi import FastAPI
 
 from aistack import __version__
 from aistack import asr as asr_pkg
+from aistack.admin import log_buffer as admin_log_buffer
+from aistack.admin import router as admin_router
 from aistack.api import asr as asr_api
 from aistack.api import llm as llm_api
 from aistack.api import tts as tts_api
@@ -32,6 +34,14 @@ if not _aistack_logger.handlers:
     _aistack_logger.setLevel(logging.INFO)
     _aistack_logger.propagate = False
 
+# Mirror every aistack log line into an in-memory ring buffer so the
+# /admin dashboard can tail them without reading the filesystem. Also
+# capture uvicorn.access so request flow shows up — without it the
+# dashboard log panel only fills on errors / cache evictions / cancels,
+# which makes a working server look dead.
+admin_log_buffer.install(_aistack_logger)
+admin_log_buffer.install(logging.getLogger("uvicorn.access"))
+
 app = FastAPI(
     title="aistack",
     version=__version__,
@@ -41,6 +51,7 @@ app = FastAPI(
 app.include_router(asr_api.router)
 app.include_router(tts_api.router)
 app.include_router(llm_api.router)
+app.include_router(admin_router.router)
 
 
 @app.get("/health")
