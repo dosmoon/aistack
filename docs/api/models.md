@@ -1,9 +1,15 @@
 # `GET /v1/models`
 
 Lists every model that is currently servable by aistack — across all
-backends and all capabilities. Consumers use this to populate model
-pickers and to decide whether a given capability is available before
-sending a request.
+backends and all capabilities — plus any aistack-provided routing
+aliases. Consumers use this to populate model pickers, filter by
+language for ASR, and decide whether a given capability is available
+before sending a request.
+
+> For the integration journey (when to call this, how the result feeds
+> into other endpoints, common pitfalls), read
+> [`integration.md`](integration.md). This page is a field-by-field
+> reference.
 
 ## Request
 
@@ -27,41 +33,46 @@ Content-Type: application/json
   "object": "list",
   "data": [
     {
+      "id": "auto",
+      "object": "model",
+      "owned_by": "aistack",
+      "capabilities": ["asr"],
+      "is_routing_alias": true
+    },
+    {
       "id": "whisper-small",
       "object": "model",
       "owned_by": "openai",
-      "capabilities": ["asr"]
+      "capabilities": ["asr"],
+      "languages": ["af", "am", "ar", "...", "yue", "zh"]
     },
     {
       "id": "nvidia/parakeet-tdt-0.6b-v3",
       "object": "model",
       "owned_by": "nvidia",
-      "capabilities": ["asr"]
+      "capabilities": ["asr"],
+      "languages": ["en", "bg", "hr", "...", "ru", "uk"]
     },
     {
       "id": "iic/SenseVoiceSmall",
       "object": "model",
       "owned_by": "alibaba",
-      "capabilities": ["asr"]
+      "capabilities": ["asr"],
+      "languages": ["zh", "yue", "en", "ja", "ko"]
     },
     {
       "id": "qwen3-tts-12hz-0.6b-customvoice",
       "object": "model",
       "owned_by": "qwen",
       "capabilities": ["tts"]
+    },
+    {
+      "id": "qwen3:4b",
+      "object": "model",
+      "owned_by": "ollama",
+      "capabilities": ["llm"]
     }
   ]
-}
-```
-
-When D6 lands, LLM models proxied from Ollama appear in the same list:
-
-```json
-{
-  "id": "qwen3:4b",
-  "object": "model",
-  "owned_by": "ollama",
-  "capabilities": ["llm"]
 }
 ```
 
@@ -104,6 +115,47 @@ This field is **not** in the OpenAI spec; OpenAI-only clients can
 ignore it. aistack-aware clients should use it to filter the picker
 shown to users (e.g. translate-task picker shows only `capabilities`
 including `"llm"`).
+
+### `languages` (array of string) — aistack extension, ASR only
+
+ISO 639-1 codes for the languages the backend can transcribe. Present
+on every real ASR entry. **Absent** on TTS / LLM entries and on
+routing aliases.
+
+Use this to filter the picker by user-requested language. For example,
+if the user asks for Cantonese (`yue`), only `whisper-small` and
+`iic/SenseVoiceSmall` are valid; `nvidia/parakeet-tdt-0.6b-v3` is
+not. The list is the backend's full supported set, not a recommendation
+— quality varies across the list (e.g. Whisper supports 99 languages
+but is much stronger on top-resource ones).
+
+Backend coverage as of `/v1`:
+
+| Backend | Languages |
+|---|---|
+| `whisper-small` (faster-whisper / Whisper family) | All 99 ISO codes Whisper officially supports. |
+| `nvidia/parakeet-tdt-0.6b-v3` | English plus 24 European languages (the model's published training set). |
+| `iic/SenseVoiceSmall` | `zh`, `yue`, `en`, `ja`, `ko`. |
+
+### `is_routing_alias` (boolean) — aistack extension
+
+Marks an entry as a virtual id that aistack resolves internally rather
+than a real backend model. The only routing alias currently defined is
+`id="auto"` for ASR, which selects the best installed backend by the
+request's `language` field (CJK → SenseVoice, European → Parakeet,
+else → faster-whisper-small).
+
+Routing aliases:
+
+- Have `capabilities` so they can be filtered by task type.
+- Do **not** have `languages` (the alias resolves to whichever installed
+  backend best fits the request's language hint).
+- Are valid `model` values on the corresponding capability endpoint —
+  OpenAI-shape clients that ignore the flag still get correct routing.
+
+aistack-aware clients can use the flag to render the alias prominently
+(e.g. as the picker default) or to group it separately from real
+models.
 
 ## Reachability semantics
 

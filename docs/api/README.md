@@ -1,11 +1,25 @@
 # aistack HTTP API
 
-This is the public API surface of aistack — the contract that consumers
-(VideoCraft and any future client) depend on. Internal implementation
-choices (which inference engine, where the GPU lives, how scheduling
-works) are documented under `docs/design/` and `docs/selection/` and
-are **not** part of the contract: they may change without API version
-bumps.
+This directory **is the contract aistack publishes to consumers**. Any
+client — CLI tools, GUI applications like VideoCraft, agent frameworks,
+future dosmoon products — integrates against what is documented here.
+aistack does not adapt to any particular consumer; consumers conform
+to this contract.
+
+Internal implementation choices (which inference engine, where the GPU
+lives, how scheduling works) are documented under `docs/design/` and
+`docs/selection/` and are **not** part of the contract — they may
+change without API version bumps.
+
+## Where to start
+
+If you are integrating aistack for the first time, **read
+[`integration.md`](integration.md) first** — it walks through the
+typical consumer journey from capability discovery to error handling
+in one coherent narrative.
+
+The per-endpoint pages on this index are the field-by-field reference
+material that integration.md links into.
 
 ## Versioning policy
 
@@ -64,7 +78,10 @@ that ignore unknown fields work without modification.
 | `/v1/models` | GET | [models.md](models.md) |
 | `/v1/audio/transcriptions` | POST | [asr.md](asr.md) |
 | `/v1/audio/speech` | POST | [tts.md](tts.md) |
-| `/v1/chat/completions` | POST | [llm.md](llm.md) *(D6)* |
+| `/v1/chat/completions` | POST | [llm.md](llm.md) |
+
+For a tour that combines all of these into a working integration,
+read [`integration.md`](integration.md).
 
 ## `GET /health`
 
