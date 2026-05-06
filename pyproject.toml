@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aistack"
+version = "0.0.1"
+description = "Localhost AI service for ASR and TTS, OpenAI-API-compatible."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "dosmoon" }]
+keywords = ["asr", "tts", "speech", "openai-compatible", "self-hosted"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "pydantic>=2.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "httpx>=0.26",
+    "ruff>=0.3",
+]
+
+[project.urls]
+Homepage = "https://github.com/dosmoon/aistack"
+Repository = "https://github.com/dosmoon/aistack"
+Issues = "https://github.com/dosmoon/aistack/issues"
+
+[tool.setuptools.packages.find]
+include = ["aistack*"]
+exclude = ["tests*", "docs*", "scripts*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+myenv/
+
+# Build artifacts
+build/
+dist/
+*.egg
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local env / secrets
+.env
+.env.local
+*.local
+
+# Model caches and weights (must NEVER be committed)
+models/
+weights/
+*.pt
+*.bin
+*.safetensors
+*.gguf
+*.onnx
+
+# Runtime / logs
+logs/
+*.log
+runtime/
