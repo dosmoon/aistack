@@ -27,7 +27,7 @@ import tempfile
 from typing import Tuple
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from aistack.asr import faster_whisper as _fw
 from aistack.asr import parakeet as _pk
@@ -156,10 +156,7 @@ async def transcribe(
 
         payload = _to_openai_response(result, response_format)
         if response_format == "text":
-            return JSONResponse(
-                content=payload,
-                media_type="text/plain",
-            )
+            return PlainTextResponse(content=payload)
         return payload
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
