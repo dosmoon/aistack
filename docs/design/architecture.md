@@ -1,6 +1,6 @@
 # aistack architecture
 
-> Status: design refresh 2026-05-06 — repositioned from "local AI service" to "AI capability gateway"
+> Status: D1~D6 shipped 2026-05-06 (single-day buildout). Repositioned mid-day from "local AI service" to "AI capability gateway". See `docs/progress/aistack-2026-05-06.md` for the day's chronicle.
 
 ## Mission
 
@@ -102,8 +102,8 @@ backend supports it.
 | **D3** | Migrate ASR providers (faster-whisper / Parakeet / SenseVoice); wire `/v1/audio/transcriptions`. *(done)* |
 | **D4** | Web UI at `/admin` (HTMX): models list, install/remove, GPU mem, live RTF, log tail. *(planned)* |
 | **D5** | VideoCraft client switch: replace in-process `*_local.py` with HTTP calls. Delete migrated source. *(done)* |
-| **D6** | **LLM gateway**: `/v1/chat/completions` proxy to Ollama. GPU-aware scheduling: ASR/LLM evict each other so neither OOMs. VideoCraft Ollama provider's `base_url` switches from `localhost:11434/v1` to `localhost:11500/v1`. *(in progress)* |
-| **D7+** | Backend abstraction: refactor in-process ASR / TTS-Docker / Ollama-proxy as plug-in backends behind a scheduler. Adds room for LAN peers and cloud GPU rentals later without touching the client API. |
+| **D6** | **LLM gateway** (Phase 2a): `/v1/chat/completions` reverse-proxy to Ollama; eviction of `asr-main` cache slots before forwarding so ASR does not pin VRAM that Ollama needs; default `keep_alive: "30s"` injected when client omits; `/v1/models` aggregates Ollama models with `capabilities: ["llm"]`; ASR `model="auto"` picks best installed backend by `language` hint. *(done — commit `29c94f0`)* |
+| **D7+** | Backend abstraction: refactor in-process ASR / TTS-Docker / Ollama-proxy as plug-in backends behind a scheduler. Adds room for LAN peers and cloud GPU rentals later without touching the client API. *(planned)* |
 
 ## Code structure (D6+ target)
 
