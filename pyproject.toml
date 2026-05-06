@@ -24,6 +24,7 @@ dependencies = [
     "uvicorn[standard]>=0.27",
     "pydantic>=2.5",
     "httpx>=0.26",
+    "python-multipart>=0.0.9",  # required by FastAPI for multipart/form-data uploads
 ]
 
 [project.optional-dependencies]
@@ -31,6 +32,29 @@ dev = [
     "pytest>=7",
     "pytest-asyncio>=0.23",
     "ruff>=0.3",
+]
+# Heavy ML deps are opt-in. Each extra installs only what that ASR provider
+# needs; users running TTS-only deployments do not pay for ASR weights.
+# Known Windows install pitfalls (pyarrow/pandas/datasets pins for parakeet,
+# torchaudio pin for sensevoice) are documented in docs/progress/local_ai.md.
+asr-fasterwhisper = [
+    "faster-whisper>=1.0",
+]
+asr-parakeet = [
+    "nemo_toolkit[asr]>=2.0",
+    # Windows pins captured during VideoCraft Phase L2.2 — re-validate
+    # whenever bumping nemo_toolkit.
+    "pyarrow==19.0.1",
+    "pandas==2.3.3",
+    "datasets==3.6.0",
+]
+asr-sensevoice = [
+    "funasr==1.3.1",
+    "torchaudio==2.11.0",
+    "soundfile",
+]
+asr-all = [
+    "aistack[asr-fasterwhisper,asr-parakeet,asr-sensevoice]",
 ]
 
 [project.urls]

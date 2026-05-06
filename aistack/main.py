@@ -1,12 +1,13 @@
 """FastAPI application entry point.
 
-D2 phase: TTS is wired (proxy to Qwen3-TTS via vLLM-Omni).
-ASR routes will land in D3.
+D2: TTS wired (proxy to Qwen3-TTS via vLLM-Omni).
+D3: ASR wired (in-process faster-whisper / parakeet / sensevoice).
 """
 
 from fastapi import FastAPI
 
 from aistack import __version__
+from aistack.api import asr as asr_api
 from aistack.api import tts as tts_api
 from aistack.tts import qwen3 as tts_qwen3
 
@@ -16,6 +17,7 @@ app = FastAPI(
     description="Localhost AI service for ASR and TTS (OpenAI-API-compatible).",
 )
 
+app.include_router(asr_api.router)
 app.include_router(tts_api.router)
 
 
