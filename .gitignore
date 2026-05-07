@@ -51,8 +51,3 @@ scratch/
 
 # Claude Code session/agent local state — per-developer, not project state
 .claude/
-
-# Captured request/response payloads from the observability layer
-# (default-off; when a dev opts in and AISTACK_OBS_PAYLOAD_DIR is unset,
-# captures land here).
-captures/
