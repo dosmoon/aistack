@@ -53,6 +53,37 @@ _REPRESENTATIVE_MODELS = {
     },
 }
 
+# Whether each backend supports SSE streaming (`stream=true` form field
+# on /v1/audio/transcriptions). The principle: a backend gets streaming
+# only when its native architecture supports incremental output without
+# accuracy loss. A model that has to be artificially chunked to
+# simulate streaming pays a quality cost we are not willing to hide
+# behind the same endpoint.
+#
+#   faster-whisper: model.transcribe() returns a Python generator that
+#       yields segments incrementally as it processes the audio. We
+#       just expose that. No accuracy loss.
+#
+#   sensevoice: our pipeline already loops over per-VAD-chunk model
+#       calls. Each chunk is independent inference; streaming just
+#       yields each chunk's result as it completes. No accuracy loss.
+#
+#   parakeet: model.transcribe() runs the FastConformer encoder over
+#       the full input at once. There is no native incremental API
+#       for the TDT-v3 checkpoint we ship. Chunking it externally
+#       (FrameBatchASR or VAD pre-cut) costs measurable WER (~+5-15%
+#       relative on our local-attention baseline, untested precisely).
+#       Until we either swap to a streaming-trained checkpoint or
+#       measure that the WER cost is acceptable, Parakeet does NOT
+#       advertise streaming. When a client sends stream=true with
+#       Parakeet selected, the gateway falls back to a single-event
+#       SSE response with a `warning` event explaining the downgrade.
+_SUPPORTS_STREAMING = {
+    "faster-whisper": True,
+    "sensevoice": True,
+    "parakeet": False,
+}
+
 # ISO 639-1 codes each backend can transcribe. Surfaced in /v1/models so
 # clients can build language-aware pickers without baking a per-backend
 # language table into their own code. Listed as a per-provider data
@@ -95,10 +126,21 @@ def model_entries() -> list[dict]:
     aistack-aware clients can render it specially while OpenAI-shape
     clients simply see it as a model id (which the gateway accepts).
 
-    Each real ASR entry carries a `languages` array listing the ISO
-    639-1 codes the backend can transcribe — clients should use this
-    to filter pickers by user-requested language, not bake their own
-    per-backend language table.
+    Each real ASR entry carries:
+      - `languages`: ISO 639-1 codes the backend can transcribe.
+      - `supports_streaming`: whether `stream=true` on the ASR endpoint
+        produces real incremental SSE output for this model. False
+        means the gateway will accept stream=true but emit a single-
+        delta SSE response (with a `warning` event explaining the
+        downgrade) rather than fail the request.
+
+    The auto routing alias's `supports_streaming` is conservative:
+    True only if every installed backend supports streaming. As soon
+    as one non-streaming backend (currently Parakeet) is in the
+    candidate pool, the alias must be False because the language hint
+    could route to it. Aware picker UIs can use this to display the
+    alias as "streaming when possible" or hide it from streaming-only
+    workflows.
     """
     out: list[dict] = []
     installed = installed_providers()
@@ -106,12 +148,14 @@ def model_entries() -> list[dict]:
     if installed:
         # Auto routing — only meaningful when at least one ASR backend
         # is reachable; otherwise it would route to nothing.
+        all_stream = all(_SUPPORTS_STREAMING[pid] for pid in installed)
         out.append({
             "id": "auto",
             "object": "model",
             "owned_by": "aistack",
             "capabilities": ["asr"],
             "is_routing_alias": True,
+            "supports_streaming": all_stream,
         })
 
     for pid in installed:
@@ -122,5 +166,6 @@ def model_entries() -> list[dict]:
             "owned_by": rep["owned_by"],
             "capabilities": ["asr"],
             "languages": list(_LANGUAGES[pid]),
+            "supports_streaming": _SUPPORTS_STREAMING[pid],
         })
     return out

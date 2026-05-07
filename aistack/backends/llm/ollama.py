@@ -93,6 +93,10 @@ async def model_entries() -> list[dict]:
             "object": "model",
             "owned_by": "ollama",
             "capabilities": ["llm"],
+            # Ollama's /v1/chat/completions natively streams via SSE
+            # (`stream: true`); aistack forwards the SSE body chunks
+            # verbatim, so every Ollama-served LLM supports streaming.
+            "supports_streaming": True,
         })
     return out
 

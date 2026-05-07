@@ -37,40 +37,46 @@ Content-Type: application/json
       "object": "model",
       "owned_by": "aistack",
       "capabilities": ["asr"],
-      "is_routing_alias": true
+      "is_routing_alias": true,
+      "supports_streaming": false
     },
     {
       "id": "whisper-small",
       "object": "model",
       "owned_by": "openai",
       "capabilities": ["asr"],
-      "languages": ["af", "am", "ar", "...", "yue", "zh"]
+      "languages": ["af", "am", "ar", "...", "yue", "zh"],
+      "supports_streaming": true
     },
     {
       "id": "nvidia/parakeet-tdt-0.6b-v3",
       "object": "model",
       "owned_by": "nvidia",
       "capabilities": ["asr"],
-      "languages": ["en", "bg", "hr", "...", "ru", "uk"]
+      "languages": ["en", "bg", "hr", "...", "ru", "uk"],
+      "supports_streaming": false
     },
     {
       "id": "iic/SenseVoiceSmall",
       "object": "model",
       "owned_by": "alibaba",
       "capabilities": ["asr"],
-      "languages": ["zh", "yue", "en", "ja", "ko"]
+      "languages": ["zh", "yue", "en", "ja", "ko"],
+      "supports_streaming": true
     },
     {
       "id": "qwen3-tts-12hz-0.6b-customvoice",
       "object": "model",
       "owned_by": "qwen",
-      "capabilities": ["tts"]
+      "capabilities": ["tts"],
+      "supports_streaming": true
     },
     {
       "id": "qwen3:4b",
       "object": "model",
       "owned_by": "ollama",
-      "capabilities": ["llm"]
+      "capabilities": ["llm"],
+      "supports_streaming": true
     }
   ]
 }
@@ -136,6 +142,29 @@ Backend coverage as of `/v1`:
 | `whisper-small` (faster-whisper / Whisper family) | All 99 ISO codes Whisper officially supports. |
 | `nvidia/parakeet-tdt-0.6b-v3` | English plus 24 European languages (the model's published training set). |
 | `iic/SenseVoiceSmall` | `zh`, `yue`, `en`, `ja`, `ko`. |
+
+### `supports_streaming` (boolean) — aistack extension
+
+True when the model serves the corresponding capability endpoint with
+`stream=true` as a real incremental SSE stream; false when streaming
+is not natively available for this model.
+
+For ASR specifically, the gateway will still accept `stream=true`
+on a model with `supports_streaming=false`, but the response is a
+single-event SSE downgrade: a `warning` event explaining the
+limitation followed by one `transcript.text.delta` event with the
+full text and one `transcript.text.done` event. Aware clients should
+filter pickers by this field rather than rely on the downgrade path.
+
+The auto routing alias's value is the AND of the candidate pool —
+True only when every installed real ASR backend supports streaming.
+As of this contract version, Parakeet does not, so the alias's value
+is False whenever Parakeet is installed.
+
+For TTS and LLM entries the field is True when the upstream natively
+streams the corresponding response (Qwen3-TTS via chunked transfer,
+Ollama via SSE) and False otherwise. As of this contract version the
+field is True for every TTS and LLM entry the gateway emits.
 
 ### `is_routing_alias` (boolean) — aistack extension
 

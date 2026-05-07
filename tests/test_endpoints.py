@@ -151,6 +151,76 @@ def test_models_includes_auto_routing_alias_when_asr_available(client):
     )
 
 
+def test_models_every_entry_declares_supports_streaming(client):
+    """Contract test: every /v1/models entry carries `supports_streaming`.
+
+    Picker UIs filter on this when the user wants real-time output.
+    The field must be present on every entry (real models, routing
+    aliases, all three capabilities) so consumers don't have to
+    special-case missing fields per backend type.
+    """
+    r = client.get("/v1/models")
+    body = r.json()
+    for entry in body["data"]:
+        assert "supports_streaming" in entry, (
+            f"every entry must declare supports_streaming; got: {entry}"
+        )
+        assert isinstance(entry["supports_streaming"], bool), (
+            f"supports_streaming must be bool; got: {entry['supports_streaming']!r}"
+        )
+
+
+def test_models_parakeet_does_not_advertise_streaming(client):
+    """Contract test: Parakeet TDT v3 advertises supports_streaming=false.
+
+    The native model.transcribe() is non-incremental and chunking it
+    externally trades measurable accuracy for stream output. Until
+    that trade-off is measured + accepted, Parakeet must not promise
+    streaming. The gateway accepts stream=true on Parakeet but emits
+    a single-event SSE downgrade response (out of scope of this test
+    — covered separately when streaming is implemented).
+    """
+    r = client.get("/v1/models")
+    body = r.json()
+    by_id = {e["id"]: e for e in body["data"]}
+    pk = by_id.get("nvidia/parakeet-tdt-0.6b-v3")
+    if pk is None:
+        pytest.skip("Parakeet not installed")
+    assert pk["supports_streaming"] is False
+
+
+def test_models_auto_streaming_reflects_pool(client):
+    """Contract test: the auto routing alias's supports_streaming is the
+    AND of the candidate pool — True only if every installed real ASR
+    backend supports streaming.
+
+    Currently Parakeet does not support streaming, so as long as
+    Parakeet is in the installed set the auto alias must be False.
+    Catches accidents where someone bumps auto to True without
+    updating the join logic.
+    """
+    r = client.get("/v1/models")
+    body = r.json()
+    by_id = {e["id"]: e for e in body["data"]}
+
+    auto = by_id.get("auto")
+    if auto is None:
+        pytest.skip("auto routing alias not present")
+
+    real = [
+        e for e in body["data"]
+        if "asr" in e.get("capabilities", [])
+        and not e.get("is_routing_alias")
+    ]
+    if not real:
+        pytest.skip("no real ASR backends to verify the AND against")
+    expected = all(e.get("supports_streaming") for e in real)
+    assert auto["supports_streaming"] == expected, (
+        "auto.supports_streaming must equal AND(real_entry.supports_streaming); "
+        f"saw auto={auto['supports_streaming']!r}, real={[e['id']+':'+str(e['supports_streaming']) for e in real]}"
+    )
+
+
 def test_models_languages_match_known_backend_coverage(client):
     """Contract test: when SenseVoice is installed, its languages list
     contains the documented CJK + en/ja/ko set; when Parakeet is

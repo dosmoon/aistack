@@ -117,6 +117,9 @@ async def list_models() -> dict:
                 "object": "model",
                 "owned_by": "qwen",
                 "capabilities": ["tts"],
+                # Qwen3-TTS upstream returns chunked audio; our proxy
+                # forwards the chunks verbatim, so streaming is native.
+                "supports_streaming": True,
             }
         )
     data.extend(await llm_ollama.model_entries())
