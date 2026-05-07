@@ -109,15 +109,96 @@ results = model.transcribe([wav_path], timestamps=True, num_workers=0, batch_siz
 
 ## 综合性能基线
 
-机型：RTX 4060 Laptop（8 GB VRAM），Windows 11，torch 2.7.1+cu126，cuDNN 9.7.1，NeMo 2.7+。
+机型：RTX 4060 Laptop（8 GB VRAM）+ i9 13 代 + 64 GB DDR5 + Windows 共享 GPU 内存上限 31 GB，torch 2.7.1+cu126，cuDNN 9.7.1，NeMo 2.7+。
 
-| 音频长度 | 冷启动（含模型加载） | Cache 命中 | RTF（cache 命中） |
+完整端到端基线（含 ffmpeg 转码、模型推理、word/segment 时间戳计算、verbose_json 序列化、HTTP 响应回传）：
+
+| 音频长度 | 冷启动 | Cache 命中（良好状态） | RTF（最佳） |
 |---|---|---|---|
-| ~80 秒（短样本） | ~25 秒 | ~3 秒 | ~0.04 |
-| 17 分钟 | ~12 秒 | ~10 秒 | ~0.01 |
-| 50 分钟 | ~120 秒 | ~62 秒 | ~0.021 |
+| ~80 秒 | ~25 秒 | ~3 秒 | ~0.04 |
+| 4 分钟 | ~37 秒 | ~13 秒 | 0.05 |
+| 12 分钟 | ~30 秒 | **5.7 秒** | **0.008** |
+| 17 分钟 | ~12 秒 | ~10 秒 | 0.010 |
+| 25 分钟 | ~52 秒 | 13-20 秒 | 0.009 |
+| 50 分钟 | ~120 秒 | 60-80 秒 | 0.021 |
+| 99 分钟 | — | ~490 秒 | 0.082（共享内存触顶）|
 
-50 分钟那条数据是跑 47.8 MB mp3 端到端通过 aistack 的 `/v1/audio/transcriptions` 测得，包含 ffmpeg 转码、模型推理、word/segment 时间戳计算、verbose_json 序列化。模型驻留 cache（aistack 默认 5 分钟空闲淘汰）。
+短音频 RTF 偏高（4 min 0.05）是 fixed overhead（ffmpeg 转码 + JSON 序列化 + HTTP 传输）摊不下去，不是 GPU 不行。中长音频（12-25 min）才看到 GPU 真实速度，**RTF 0.008 ≈ 125× 实时**是本机配置下的稳态最优。
+
+## 请求间内存动力学
+
+> 本节是 aistack 团队 2026-05-07 实测发现的工程现象，整理成机制说明。NVIDIA / PyTorch / NeMo 任何官方文档都没把这套放在一起讨论。
+
+### 现象
+
+**同一段音频在不同前置请求历史下，wall time 漂移 2-4×。最坏情况比冷启动还慢**。
+
+实测对照（同一段 25 min 音频，aistack `/v1/audio/transcriptions`）：
+
+| Warm-up 路径 | wall #1 | wall #2 | reserved peak |
+|---|---|---|---|
+| 冷 → 50min × 2 → 25min | 20 s | 20 s | 24.7 GB |
+| 冷 → 12min × 2 → 25min | 15 s | **13 s** | 14.5 GB |
+| 冷 → 25min × 3（无前置） | 52 s | 27 s | 13.4 GB |
+
+实测对照（50 min 音频在不同上下文下）：
+
+| 场景 | wall |
+|---|---|
+| 50 min cache 命中 baseline | 69 s |
+| 25 min × 1 后跑 50 min | **175 s**（比冷启动还慢 56 s）|
+| aistack 重启冷启动 50 min | 119 s（含 ~25 s 模型加载）|
+
+### 机制
+
+来自 PyTorch 官方文档 + ZDevito 的 caching allocator 详解 + NeMo / Parakeet TDT 架构分析：
+
+**1. PyTorch 维护一个 GPU 内存池（caching allocator）**
+
+上次请求的张量释放后，**block 留在池里复用**，不还给 CUDA driver。设计初衷是避免 `cudaFree`（同步设备调用，会打断 CUDA-CPU pipeline）。
+
+**2. 池子的形状由上次请求的工作量决定**
+
+- 上次跑 50min Rubio 留下 24 GB 池子，里面是"50min-shape"的 free block
+- 下次 25min 来要新 shape：cuDNN 重新选 conv 算法、申请新 size workspace
+- 必须 split 老 block 或申请新 block → bookkeeping + 同步开销
+
+**3. 不同 shape 兼容程度差很多**
+
+- 12min → 25min：cuDNN 算法基本同源，pool 直接扩展，wall 最低（13s）
+- 50min → 25min：cuDNN 重选算法，pool 碎片化，wall 中等（20s）
+- 冷 → 25min：完全重建 pool + 模型加载，wall 最高（52s 含 25s 加载）
+
+**4. Parakeet TDT 因架构特点更敏感**
+
+- TDT decoder 每 timestep 跑两个网络（prediction + joint），duration 决定跳几帧 → Python 控制流频繁同步 GPU
+- FastConformer 8x subsampling + local attention 的 cuDNN workspace 较大且与输入长度强相关
+- 比简单 CTC 模型 stream event 密度高，pool 形状变化空间也大
+
+### 实战影响
+
+**正向**：连续跑同形状（同长度同模型同语种）音频时，cache 复用红利明显，最快可达 RTF 0.008（12min Trump 重复跑实测）。
+
+**负向**：混合长度时 wall 不可预测漂移；最坏可超过冷启动，因为"被污染的状态" + "pool 重排开销" > "模型加载开销"。
+
+### 不能做什么
+
+我们尝试过 `torch.cuda.empty_cache()` 自动清池来"修复碎片化"——失败：
+
+- 第一次请求后调 empty_cache，第二次请求 hang 死在 worker thread 内部 CUDA 调用
+- GPU 锁永远不释放，整个 ASR 端点不可用，必须 kill 进程
+- 机制：`empty_cache()` 内部对每个 free block 调 `cudaFree`；`cudaFree` 是同步调用（NVIDIA 文档定义），等所有 stream 完成
+- NeMo / cuDNN 内部 stream 上若有未完成 event，同步可能与 cuDNN descriptor 生命周期形成死锁
+- 不是 Windows 特有，是 PyTorch 维护者明确反对的 empty_cache 反模式（参 [zdevito 详解](https://zdevito.github.io/2022/08/04/cuda-caching-allocator.html)）
+
+### 能做什么
+
+1. **批量同长度同语种工作量**——性能最优、最稳定
+2. **混合工作量先批一类再切一类**——避免高频 shape 切换
+3. **切换工作量类别前 kill aistack 重启**（25-30 秒模型加载成本，比"被污染状态"快得多）
+4. **接受 wall 漂移作为本地 ASR 的工程现实**——写文档让客户端知道，不要承诺严格 SLA
+
+aistack 当前**不会自动检测 + 修复**这个现象——经实测后认为没有可靠的启发式（变量太多、规则不存在），且自动修复路径已被证伪。
 
 ## 文档为什么"天书"
 

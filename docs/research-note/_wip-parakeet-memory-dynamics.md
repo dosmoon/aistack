@@ -101,9 +101,11 @@ audio_sec=1501.63 (25 min), 同一 mp3
 - 纯冷启动 → 最差（含模型加载 25-30s）
 - alloc_peak 始终在 12 GB ± 5%，**与 pool 状态无关**——这才是 25min 的真实工作集
 
-## 待做的实验（pending empty_cache 开关）—— **CANCELLED**
+## empty_cache 实验结果与机制修订（important）
 
-加 `AISTACK_PARAKEET_CLEAR_CACHE_BETWEEN=1` 后实测**第二个请求挂死**：
+### 实测结果
+
+加 `AISTACK_PARAKEET_CLEAR_CACHE_BETWEEN=1` 后第二个请求挂死：
 
 ```
 21:46:02 rid=3a319d9b6318960e   ← cold start，正常完成 52s
@@ -111,24 +113,89 @@ audio_sec=1501.63 (25 min), 同一 mp3
 [第三次请求]                    ← 同样 hang
 ```
 
-第二次开始的请求挂在 `asyncio.to_thread(module.transcribe, ...)` 内部，CUDA 调用永远不返回。GPU 锁永远不释放。整个 ASR 端点不可用直到 kill 进程。
+请求挂在 `asyncio.to_thread(module.transcribe, ...)` 内部，CUDA 调用永远不返回。GPU 锁永远不释放。整个 ASR 端点不可用直到 kill 进程。
 
-**机制猜测**（未严格验证，但和现象吻合）：
+### 机制（修订版，基于 PyTorch 官方文档而非凭空推测）
 
-- Windows WDDM 把 torch reserved pool 的一部分放在 shared system memory 区域（PCIe 路径）
-- `torch.cuda.empty_cache()` 释放这部分时让 Windows decommit 这块共享区
-- 下一次大量 alloc 时需要重新 commit + 重铺
-- 这个 commit/decommit 循环在 WDDM 驱动层有竞态/死锁
+**之前我把现象归因到"Windows WDDM decommit/recommit race"——错误**。该机制是凭空编的，没有任何官方文档、PyTorch issue、社区帖支持。修订后的机制基于 PyTorch 维护者公开文档：
 
-Linux 上 `empty_cache()` 不需要走这条路，可能没事——但 aistack 部署目标就是消费级 Windows 桌面，**这条路对我们的部署面没用**。
+来源：[zdevito.github.io/2022/08/04/cuda-caching-allocator.html](https://zdevito.github.io/2022/08/04/cuda-caching-allocator.html) + PyTorch 官方 `empty_cache` 文档
 
-**已撤销**：`AISTACK_PARAKEET_CLEAR_CACHE_BETWEEN` env flag + `dev-clearcache.bat` launcher 都已 revert（commit 后续）。`_reset_gpu_peak()` 退回到只 reset peak stats。
+**实际机制**：
 
-**下一步候选方向**（不用 empty_cache）：
+1. `torch.cuda.empty_cache()` 内部对每个 free block 调 `cudaFree`
+2. **`cudaFree` 是同步 CUDA API 调用**（NVIDIA 官方文档定义）—— 隐式 `cudaDeviceSynchronize()`，等所有挂起 GPU 操作完成
+3. PyTorch caching allocator 的存在目的就是**避免** `cudaFree`，因为同步障碍打断 CPU-GPU pipeline
+4. `empty_cache()` 强行触发 cudaFree，**与 NeMo / cuDNN 内部 stream 上的未完成 event 形成同步竞争**
+5. NeMo TDT 内部因架构特点（每 timestep 双网络协同 + frame skipping）stream event 密度高
+6. 同步 + descriptor 生命周期 + 内部 stream 依赖 → 可能死锁
 
-- **A. Smart warm-up**：服务启动时主动跑一段干净的 dummy audio（比如 10min 的预录静音）让 pool 长到稳定形状。代价：启动多 10-15 秒。收益：首次真实请求避开冷启动。
-- **B. 显式控制 cuDNN benchmark**：`torch.backends.cudnn.benchmark = False`（禁止算法选择缓存）vs `True`（启用）。可能让 pool 形状更可预测，代价是单次推理略慢。
-- **C. 接受现实**：消费 Windows GPU 的内存动力学就是这样。aistack 的产品决策是"warm steady state 快、混合工作量首请求慢"，**写进文档**让用户理解，不再尝试自动修。
+**和 Windows / Linux 无关，是 empty_cache 在活跃 CUDA 工作期间调用的通用反模式**。Windows 工作集大、stream 操作多，触发概率高；Linux 不是免疫，只是窗口小。
+
+PyTorch 维护者 [明确反对常规调用 empty_cache](https://discuss.pytorch.org/t/about-torch-cuda-empty-cache/34232)：
+> "If you need it repeatedly, your program is in an 'unhealthy state'. ... Performance cost is significant."
+
+**已撤销**：`AISTACK_PARAKEET_CLEAR_CACHE_BETWEEN` env flag + `dev-clearcache.bat` launcher 都已 revert（commit `782b70d`）。`_reset_gpu_peak()` 退回到只 reset peak stats。
+
+## 关键洞察（基于 6 组实验综合）
+
+### 洞察 1：前后任务共享的状态没有唯一规则
+
+跨调用持久存在的状态包括：模型权重、cuDNN workspace cache、PyTorch caching allocator pool（带形状/碎片信息）、cuDNN benchmark 算法选择缓存、CUDA streams + 未完成 events、pinned memory 缓冲、`cfg.decoding` 字段。
+
+**每一项独立受上次工作量影响，相互之间又有交叉作用**。不存在一条简单规则告诉你"前面跑过 X 之后下次性能会是 Y"。
+
+每次试图把这个多变量耦合简化成单条规则（"reserved 越大越快"、"同形状最优"、"Windows WDDM 锅"）都被新数据打脸。结构性原因：规则不存在。
+
+### 洞察 2：最恶劣情况超过冷启动
+
+数据：
+- Cold start 50min（含模型加载 ~25-30s）：**119 s**
+- 25min × 1 → 50min Rubio（碎片化最严重）：**175 s**
+
+**175 s > 119 s** ── "warm 状态被污染" 比 "kill 进程从零开始" 慢 56 秒。
+
+这反直觉但很重要：**在某些工作负载切换场景下，主动重启 aistack 比沿用 warm cache 更快**。原本"warm cache 永远更优"的简化模型被这条数据彻底否定。
+
+### 洞察 3：alloc_peak 是真实工作量、reserved_peak 是池子状态
+
+```
+12 min Trump 反复跑：alloc_peak 永远 7110 MB，reserved 13412 (warm baseline)
+50 min Rubio 跑过后再跑 12 min：alloc_peak 仍 7159，reserved 跳到 19446
+```
+
+**alloc_peak 反映音频内在 GPU 工作量**（非常稳定，跨场景 5% 浮动）。**reserved_peak 是 pool 的当前最高水位**（跨场景跨度大）。
+benchmark 用 alloc_peak 作为指标比 wall time 信噪比高一个数量级。
+
+## 设计原则（基于上述洞察）
+
+**原则 A：放弃"自动修复"**
+
+任何"嗅探到状态不好，自动 empty_cache / 重置 / warm-up"的逻辑都不可靠（empty_cache 已证伪）。状态空间太大，没有可定义边界的启发式。
+
+**原则 B：暴露"reset"作为产品能力**
+
+既然用户真的可能撞到"重启反而更快"的场景，aistack 应该提供：
+
+```
+admin 端点 /admin/api/reset-asr-state
+  - 释放当前 ASR 模型（_model_cache.evict_category）
+  - GC + 重新加载（下一次请求触发，~25-30s 模型加载）
+  - 不杀 aistack 本身，不影响 LLM/TTS 路径
+```
+
+技术上很简单（`_model_cache.evict_category("asr-main")` 已实现）。**未实现，作为 follow-up**。
+
+**原则 C：诚实文档化**
+
+把 wall 漂移、最坏情况、推荐使用模式写进对外文档（已完成，见 `consumer-gpu-asr-baseline.md` 的"请求间内存动力学"节 + `parakeet-on-consumer-gpu.md` 的同名节）。
+
+## 后续工作（不阻塞当前发布）
+
+- 实现 `/admin/api/reset-asr-state` 端点（~半小时工作）
+- 测 `torch.backends.cudnn.benchmark = False` 是否能让 pool 形状更可预测（代价：单次推理略慢）
+- 用"短视频拼接"做严谨基线（剔除文字密度变量，跑 5/10/15/30/60/90 min 完整曲线）
+- 用 `py-spy` 或 `gdb attach` 抓一次 hang 进程的 stack trace，确认 cudaFree 死锁的具体堆栈位置（不是必须但能 close 机制猜测的最后一公里）
 
 ## 数据落盘归档
 

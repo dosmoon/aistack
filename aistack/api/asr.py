@@ -126,17 +126,28 @@ def _reset_gpu_peak() -> None:
     torch / CUDA unavailable.
 
     Earlier this function was given an optional `torch.cuda.empty_cache()`
-    call gated by AISTACK_PARAKEET_CLEAR_CACHE_BETWEEN, intended to clean
-    pool fragmentation between requests. Live testing (2026-05-07,
-    Win11 + RTX 4060L 8 GB + 31 GB Windows shared GPU memory) showed
-    that empty_cache() between consecutive Parakeet requests reliably
-    HANGS the second request inside the worker thread's CUDA call —
-    no exception, no timeout, just deadlock. The GPU lock never
-    releases and the entire ASR endpoint becomes unresponsive until
-    the process is killed. Suspected root cause is a Windows WDDM
-    decommit / re-commit race on the shared-memory portion of the
-    reserved pool. The flag and helper bat were removed in the same
-    commit that simplified this function back to peak-stats reset only.
+    call to clean pool fragmentation between requests. That path was
+    removed after live testing showed the second consecutive Parakeet
+    request hung inside its CUDA call (no exception, no timeout, just
+    deadlock; observability finally never ran, GPU lock never released).
+
+    The mechanism is documented PyTorch behavior, not platform-specific:
+
+      - empty_cache() iterates the caching allocator's free blocks and
+        calls cudaFree on each.
+      - cudaFree is a synchronous CUDA API call that implicitly waits
+        for device work to complete before returning. NVIDIA documents
+        this; PyTorch's caching allocator exists specifically to AVOID
+        cudaFree during steady-state operation.
+      - When cudaFree synchronizes while NeMo / cuDNN still have
+        in-flight stream events (e.g. async cleanup from the prior
+        request, descriptor lifetimes from cuDNN's internal pools),
+        the synchronization barrier can block waiting on operations
+        that themselves depend on the freed blocks → deadlock.
+
+    PyTorch maintainers explicitly discourage regular use of
+    empty_cache for exactly this class of reason. Forcing it on every
+    request was a misuse of the API. The flag/launcher were reverted.
     """
     try:
         import torch  # type: ignore
