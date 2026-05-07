@@ -88,6 +88,20 @@ def _sse_event(payload: dict) -> bytes:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
 
 
+def _record_obs_completion(obs_state, result: dict, started_monotonic: float) -> None:
+    """At stream/non-stream done, fold the result-derived metrics
+    (audio_sec, detected_language, rtf) into the request's observability
+    extras so they show up in /admin/api/metrics and JSONL access log."""
+    if obs_state is None or not isinstance(result, dict):
+        return
+    duration = float(result.get("duration", 0.0) or 0.0)
+    elapsed_ms = (time.perf_counter() - started_monotonic) * 1000.0
+    obs_state.extra["audio_sec"] = round(duration, 3)
+    obs_state.extra["detected_language"] = result.get("language")
+    if duration > 0 and elapsed_ms > 0:
+        obs_state.extra["rtf"] = round((elapsed_ms / 1000.0) / duration, 4)
+
+
 async def _stream_transcribe(
     *,
     module,
@@ -99,6 +113,7 @@ async def _stream_transcribe(
     supports_streaming: bool,
     canonical_model_id: str,
     tmp_dir: str,
+    obs_state=None,
 ) -> AsyncIterator[bytes]:
     """SSE event stream for a transcription request.
 
@@ -181,6 +196,10 @@ async def _stream_transcribe(
                     "words": result.get("words", []),
                 },
             })
+            _record_obs_completion(
+                obs_state, result,
+                obs_state.started_monotonic if obs_state else time.perf_counter(),
+            )
             yield _sse_event({
                 "type": "transcript.text.done",
                 "language": result.get("language"),
@@ -237,6 +256,10 @@ async def _stream_transcribe(
                         },
                     })
                 elif event_type == "done":
+                    _record_obs_completion(
+                        obs_state, payload,
+                        obs_state.started_monotonic if obs_state else time.perf_counter(),
+                    )
                     yield _sse_event({
                         "type": "transcript.text.done",
                         "language": payload.get("language"),
@@ -454,6 +477,7 @@ async def transcribe(
                     supports_streaming=supports,
                     canonical_model_id=canonical_id,
                     tmp_dir=tmp_dir,
+                    obs_state=obs_state,
                 ),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache"},
@@ -508,13 +532,8 @@ async def transcribe(
             except (asyncio.CancelledError, Exception):
                 pass
 
-        if obs_state is not None and isinstance(result, dict):
-            duration = float(result.get("duration", 0.0))
-            elapsed_ms = (time.perf_counter() - obs_state.started_monotonic) * 1000.0
-            obs_state.extra["audio_sec"] = round(duration, 3)
-            obs_state.extra["detected_language"] = result.get("language")
-            if duration > 0 and elapsed_ms > 0:
-                obs_state.extra["rtf"] = round((elapsed_ms / 1000.0) / duration, 4)
+        if obs_state is not None:
+            _record_obs_completion(obs_state, result, obs_state.started_monotonic)
 
         payload = _to_openai_response(result, response_format)
         if response_format == "text":
