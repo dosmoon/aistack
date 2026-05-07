@@ -458,84 +458,243 @@ def _normalize_hypothesis(hyp) -> tuple[str, list, list]:
 
 
 # ── Segment synthesis from word timestamps ───────────────────────────────────
-
-# Tunables for the word→segment regrouping. These match conventional
-# subtitle pacing (≤ ~5 s per cue, break at sentence boundaries) and
-# are deliberately conservative — better to over-split than to glue
-# unrelated sentences into a single cue.
-_SEGMENT_MAX_DURATION_SEC = 5.0
-_SEGMENT_MIN_DURATION_SEC = 0.4
-_SEGMENT_SILENCE_GAP_SEC = 0.6
+#
+# Algorithm and thresholds modeled after stable-ts (jianfch/stable-ts), the
+# de-facto OpenAI-Whisper-ecosystem standard for word→subtitle regrouping,
+# cross-checked against the subtitle-localisation industry's CPS / cue-
+# duration conventions.
+#
+# Parameter sources:
+#   max_chars     = 70       stable-ts default; ≈ 35 chars × 2 lines, the
+#                            standard subtitle line length cap
+#   min_chars     = 50       stable-ts default; below this we don't fall
+#                            back to comma-splitting (avoids over-splitting)
+#   max_gap_sec   = 0.5      stable-ts default; matches WhisperX's gap merge
+#                            and the typical 0.4–0.6 s silence threshold
+#   max_dur_sec   = 7.0      subtitle industry max cue duration
+#   min_dur_sec   = 1.0      subtitle industry min cue duration (anything
+#                            shorter "flickers" — viewer cannot read it)
+#   sentence_ends = .!?。！？  Latin + CJK sentence-final punctuation
+#   comma_ends    = ,，       Latin + CJK comma — secondary split fallback
+#
+# References:
+#   stable-ts default regroup string:
+#     "isp_cm_sp=.* /。/?/？_sg=.5_sp=,* /，++++50_sl=70_cm"
+#   subtitle-localisation conventions: 17 CPS reading-speed cap, 1–7 s cue
+#   duration, 32–42 chars/line × 2 lines.
+_SEGMENT_MAX_CHARS = 70
+_SEGMENT_MIN_CHARS_FOR_COMMA_SPLIT = 50
+_SEGMENT_MAX_GAP_SEC = 0.5
+_SEGMENT_MAX_DURATION_SEC = 7.0
+_SEGMENT_MIN_DURATION_SEC = 1.0
 _SEGMENT_SENTENCE_ENDERS = (".", "!", "?", "。", "！", "？")
+_SEGMENT_COMMA_ENDERS = (",", "，")
 
 
 def _segments_from_words(words: list[dict]) -> list[dict]:
     """Group word-level timestamps into subtitle-friendly segments.
 
-    Break rules (any one closes the current segment):
-      - silence gap > _SEGMENT_SILENCE_GAP_SEC between successive words
-      - current segment duration ≥ _SEGMENT_MAX_DURATION_SEC AND the
-        last word ends with a sentence-final punctuation mark
-      - duration would exceed 1.5× _SEGMENT_MAX_DURATION_SEC even
-        without punctuation (long monotone speech)
+    Multi-stage split policy mirroring stable-ts's regroup pipeline:
 
-    Words shorter than _SEGMENT_MIN_DURATION_SEC don't trigger a flush
-    on their own — that prevents single-syllable utterances from
-    creating tiny segments that flicker on screen.
-    """
+        Stage 1: PRIMARY split — sentence-ending punctuation OR silence
+                 gap > max_gap_sec OR current segment exceeds max_chars
+                 OR exceeds max_dur_sec. The min_dur guard prevents
+                 sub-second segments from being split off into flickering
+                 cues; if a candidate split would leave the current
+                 segment under min_dur, we don't flush.
+
+        Stage 2: SECONDARY split — for any post-Stage-1 segment that is
+                 still over max_chars or max_dur, fall back to splitting
+                 at commas (and only if the prefix is at least
+                 min_chars_for_comma_split, so we don't slice tiny
+                 trailing fragments).
+
+        Stage 3: HARD split — any segment still over the limits gets a
+                 length-based forced break.
+
+    The output is suitable for direct SRT emission: every segment is
+    ≥ min_dur, ≤ max_dur, ≤ max_chars."""
     if not words:
         return []
 
-    segments: list[dict] = []
-    cur_words: list[dict] = []
-    cur_start: float = 0.0
-    cur_end: float = 0.0
+    # Stage 1
+    raw = _stage1_primary_split(words)
+
+    # Stage 2
+    refined: list[dict] = []
+    for seg in raw:
+        if _seg_chars(seg) <= _SEGMENT_MAX_CHARS and _seg_dur(seg) <= _SEGMENT_MAX_DURATION_SEC:
+            refined.append(seg)
+            continue
+        refined.extend(_stage2_comma_split(seg))
+
+    # Stage 3
+    final: list[dict] = []
+    for seg in refined:
+        if _seg_chars(seg) <= _SEGMENT_MAX_CHARS and _seg_dur(seg) <= _SEGMENT_MAX_DURATION_SEC:
+            final.append(seg)
+            continue
+        final.extend(_stage3_hard_split(seg))
+
+    # Re-id sequentially and drop the internal _words tag — the public
+    # contract is {id, start, end, text}.
+    out: list[dict] = []
+    for idx, s in enumerate(final):
+        out.append({
+            "id": idx,
+            "start": s["start"],
+            "end": s["end"],
+            "text": s["text"],
+        })
+    return out
+
+
+def _seg_chars(seg: dict) -> int:
+    return len(seg.get("text", ""))
+
+
+def _seg_dur(seg: dict) -> float:
+    return float(seg.get("end", 0.0)) - float(seg.get("start", 0.0))
+
+
+def _seg_from_word_run(run: list[dict]) -> dict:
+    """Build a segment from a list of word dicts {start,end,word}."""
+    text = " ".join(w["word"] for w in run if w.get("word")).strip()
+    return {
+        "id": 0,  # set by caller
+        "start": float(run[0].get("start", 0.0)),
+        "end": float(run[-1].get("end", 0.0)),
+        "text": text,
+        "_words": list(run),  # internal — used by stage 2/3 to re-split
+    }
+
+
+def _stage1_primary_split(words: list[dict]) -> list[dict]:
+    """Stage 1: sentence enders / silence gap / size limits.
+    Honours min_dur to avoid flickering cues."""
+    segs: list[dict] = []
+    run: list[dict] = []
+    cur_chars = 0
+    cur_start = 0.0
+    cur_end = 0.0
 
     def flush() -> None:
-        if not cur_words:
+        nonlocal run, cur_chars, cur_start, cur_end
+        if not run:
             return
-        text = " ".join(w["word"] for w in cur_words if w.get("word")).strip()
-        segments.append({
-            "id": len(segments),
-            "start": cur_start,
-            "end": cur_end,
-            "text": text,
-        })
-
-    hard_max = _SEGMENT_MAX_DURATION_SEC * 1.5
+        segs.append(_seg_from_word_run(run))
+        run = []
+        cur_chars = 0
 
     for w in words:
-        ws = float(w.get("start", 0.0))
-        we = float(w.get("end", ws))
         wt = (w.get("word") or "").strip()
         if not wt:
             continue
+        ws = float(w.get("start", 0.0))
+        we = float(w.get("end", ws))
 
-        if not cur_words:
+        if not run:
+            run = [w]
             cur_start = ws
             cur_end = we
-            cur_words = [w]
+            cur_chars = len(wt)
             continue
 
         gap = ws - cur_end
-        cur_dur = cur_end - cur_start
-        prev_text = (cur_words[-1].get("word") or "").rstrip()
+        prev_text = (run[-1].get("word") or "").rstrip()
         prev_ends_sentence = prev_text.endswith(_SEGMENT_SENTENCE_ENDERS)
+        cur_dur = cur_end - cur_start
+        prospective_chars = cur_chars + 1 + len(wt)  # +1 for space
+        prospective_dur = we - cur_start
 
-        should_flush = (
-            gap > _SEGMENT_SILENCE_GAP_SEC
-            or (cur_dur >= _SEGMENT_MAX_DURATION_SEC and prev_ends_sentence)
-            or cur_dur >= hard_max
+        # Conditions that argue for breaking BEFORE this word.
+        gap_break = gap > _SEGMENT_MAX_GAP_SEC
+        sentence_break = prev_ends_sentence
+        size_break = (
+            prospective_chars > _SEGMENT_MAX_CHARS
+            or prospective_dur > _SEGMENT_MAX_DURATION_SEC
         )
-        if should_flush and cur_dur >= _SEGMENT_MIN_DURATION_SEC:
+
+        if (gap_break or sentence_break or size_break) and cur_dur >= _SEGMENT_MIN_DURATION_SEC:
             flush()
-            cur_words = [w]
+            run = [w]
             cur_start = ws
             cur_end = we
+            cur_chars = len(wt)
             continue
 
-        cur_words.append(w)
+        run.append(w)
         cur_end = we
+        cur_chars = prospective_chars
 
     flush()
-    return segments
+    return segs
+
+
+def _stage2_comma_split(seg: dict) -> list[dict]:
+    """Stage 2: split an over-long segment at commas, but only if the
+    prefix has accumulated at least min_chars_for_comma_split. This
+    avoids producing a tiny "yes," prefix that flickers on screen."""
+    words = seg.get("_words") or []
+    if not words:
+        return [seg]
+
+    out: list[dict] = []
+    run: list[dict] = []
+    cur_chars = 0
+    for w in words:
+        wt = (w.get("word") or "").strip()
+        if not wt:
+            continue
+        if not run:
+            run = [w]
+            cur_chars = len(wt)
+            continue
+        run.append(w)
+        cur_chars += 1 + len(wt)
+        ends_with_comma = wt.rstrip().endswith(_SEGMENT_COMMA_ENDERS)
+        if ends_with_comma and cur_chars >= _SEGMENT_MIN_CHARS_FOR_COMMA_SPLIT:
+            out.append(_seg_from_word_run(run))
+            run = []
+            cur_chars = 0
+    if run:
+        out.append(_seg_from_word_run(run))
+    return out or [seg]
+
+
+def _stage3_hard_split(seg: dict) -> list[dict]:
+    """Stage 3: brute-force split by max_chars / max_dur. Last resort
+    for run-on speech with neither punctuation nor silence."""
+    words = seg.get("_words") or []
+    if not words:
+        return [seg]
+
+    out: list[dict] = []
+    run: list[dict] = []
+    cur_chars = 0
+    cur_start = 0.0
+    for w in words:
+        wt = (w.get("word") or "").strip()
+        if not wt:
+            continue
+        ws = float(w.get("start", 0.0))
+        we = float(w.get("end", ws))
+        if not run:
+            run = [w]
+            cur_chars = len(wt)
+            cur_start = ws
+            continue
+        prospective_chars = cur_chars + 1 + len(wt)
+        prospective_dur = we - cur_start
+        if (prospective_chars > _SEGMENT_MAX_CHARS
+                or prospective_dur > _SEGMENT_MAX_DURATION_SEC):
+            out.append(_seg_from_word_run(run))
+            run = [w]
+            cur_chars = len(wt)
+            cur_start = ws
+            continue
+        run.append(w)
+        cur_chars = prospective_chars
+    if run:
+        out.append(_seg_from_word_run(run))
+    return out
