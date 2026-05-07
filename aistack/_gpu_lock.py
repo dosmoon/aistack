@@ -76,28 +76,18 @@ def _busy_exception(category: str, retry_after_sec: int) -> HTTPException:
     )
 
 
-def _emit_slot_busy(category: str) -> None:
-    """Best-effort metrics hook for slot-rejected requests.
-
-    Slot-busy 503s never reach the route handler, so the observability
-    middleware's regular path doesn't see them as "asr" / "llm" / "tts"
-    events — they look like ordinary 503s. Notify the metrics module
-    here so the dashboard can show "rejected requests" separately from
-    real errors. Lazy-imported to avoid a circular import at module load.
-    """
-    try:
-        from aistack.observability import metrics as _obs_metrics
-        _obs_metrics.record_slot_busy(category)
-    except Exception:
-        pass
-
-
 @contextmanager
 def busy_or_503(category: str = "asr", retry_after_sec: int = 5):
-    """Acquire the GPU slot or raise HTTP 503. Sync context manager."""
+    """Acquire the GPU slot or raise HTTP 503. Sync context manager.
+
+    Slot-busy 503s carry a `Retry-After` header — the observability
+    middleware uses that signal to classify the response as `503-busy`
+    (load shedding) rather than `5xx` (real failure), so we don't need
+    a separate metrics hook here. One classification path keeps the
+    counters consistent.
+    """
     global _HOLDER
     if not _LOCK.acquire(blocking=False):
-        _emit_slot_busy(category)
         raise _busy_exception(category, retry_after_sec)
     _HOLDER = category
     try:
@@ -118,7 +108,6 @@ def try_acquire_or_503(category: str, retry_after_sec: int = 5) -> None:
     """
     global _HOLDER
     if not _LOCK.acquire(blocking=False):
-        _emit_slot_busy(category)
         raise _busy_exception(category, retry_after_sec)
     _HOLDER = category
 

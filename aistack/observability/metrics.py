@@ -54,6 +54,23 @@ def _classify(status_code: int, *, slot_busy: bool = False, disconnected: bool =
     return "5xx"
 
 
+def is_slot_busy_response(status_code: int, response_headers: list) -> bool:
+    """Detect a GPU-slot-busy 503 response. The marker is a 503 status
+    accompanied by a `Retry-After` header — `_gpu_lock._busy_exception`
+    sets both, no other 503 path in aistack does. Used by the
+    observability middleware to classify load-shedding separately from
+    real 5xx failures."""
+    if status_code != 503:
+        return False
+    for k, _v in response_headers or []:
+        try:
+            if k.decode("latin-1").lower() == "retry-after":
+                return True
+        except Exception:
+            continue
+    return False
+
+
 class _RollingSamples:
     """Time-windowed sample buffer. (timestamp, value) pairs; older than
     METRICS_WINDOW_SEC drop on next access. Bounded growth: deque eviction
@@ -120,11 +137,12 @@ def record(
     request_id: str | None = None,
     extra: dict[str, Any] | None = None,
     disconnected: bool = False,
+    slot_busy: bool = False,
 ) -> None:
     """Record a single completed request."""
     if not config.is_enabled("metrics"):
         return
-    cls = _classify(status_code, disconnected=disconnected)
+    cls = _classify(status_code, slot_busy=slot_busy, disconnected=disconnected)
     with _LOCK:
         cm = _CATEGORIES[category]
         cm.counters[cls] += 1
@@ -145,14 +163,6 @@ def record(
         })
 
 
-def record_slot_busy(category: str) -> None:
-    """Slot-busy 503s never enter the route handler, so the regular
-    record() path doesn't see them. Called from _gpu_lock when the
-    fast-path acquire fails."""
-    if not config.is_enabled("metrics"):
-        return
-    with _LOCK:
-        _CATEGORIES[category].counters["503-busy"] += 1
 
 
 def snapshot() -> dict[str, Any]:

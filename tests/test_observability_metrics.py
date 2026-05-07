@@ -39,7 +39,7 @@ def test_status_classification():
     metrics.record("llm", status_code=400, latency_ms=2)
     metrics.record("llm", status_code=500, latency_ms=3)
     metrics.record("llm", status_code=200, latency_ms=1, disconnected=True)
-    metrics.record_slot_busy("llm")
+    metrics.record("llm", status_code=503, latency_ms=4, slot_busy=True)
     snap = metrics.snapshot()["categories"]["llm"]
     assert snap["by_class"]["2xx"] == 1
     assert snap["by_class"]["4xx"] == 1
@@ -49,6 +49,16 @@ def test_status_classification():
     # 503-busy and client-disconnect are not counted as errors.
     assert snap["error_count"] == 2
     assert snap["slot_503"] == 1
+
+
+def test_slot_busy_response_detection():
+    # A 503 with Retry-After is the slot-busy marker.
+    assert metrics.is_slot_busy_response(503, [(b"retry-after", b"5")])
+    assert metrics.is_slot_busy_response(503, [(b"Retry-After", b"5")])
+    # A 503 without Retry-After is a real upstream failure.
+    assert not metrics.is_slot_busy_response(503, [(b"content-type", b"application/json")])
+    # Non-503 status never counts as slot-busy.
+    assert not metrics.is_slot_busy_response(500, [(b"retry-after", b"5")])
 
 
 def test_concurrent_record_no_loss():
@@ -72,7 +82,7 @@ def test_concurrent_record_no_loss():
 def test_disabled_toggle_skips_record():
     config.set_enabled("metrics", False)
     metrics.record("asr", status_code=200, latency_ms=99)
-    metrics.record_slot_busy("asr")
+    metrics.record("asr", status_code=503, latency_ms=2, slot_busy=True)
     assert metrics.snapshot()["categories"] == {}
 
 

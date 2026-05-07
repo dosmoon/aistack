@@ -120,6 +120,7 @@ class ObservabilityMiddleware:
             raise
         finally:
             elapsed_ms = (time.perf_counter() - state.started_monotonic) * 1000.0
+            slot_busy_503 = metrics.is_slot_busy_response(status_code, response_headers)
             try:
                 metrics.record(
                     category,
@@ -129,6 +130,7 @@ class ObservabilityMiddleware:
                     request_id=rid,
                     extra={**state.extra, "model": state.model} if state.model else state.extra,
                     disconnected=disconnected,
+                    slot_busy=slot_busy_503,
                 )
             except Exception:
                 logger.exception("metrics.record failed")
