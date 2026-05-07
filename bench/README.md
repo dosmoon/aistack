@@ -9,12 +9,16 @@
 dev.bat
 
 # 跑 LibriSpeech dev-clean（首次自动下载 337 MB 到 ~/.cache/aistack-bench/）
+# 默认每位说话人取 2 条，共 40 人 × 2 = 80 条，确定性子集（按 id 排序取前 2）
 python -m bench.asr_eval --model whisper-small
 python -m bench.asr_eval --model parakeet
 python -m bench.asr_eval --model auto
 
 # 全量（5.4 小时音频，2703 条）
-python -m bench.asr_eval --model whisper-small --limit 0
+python -m bench.asr_eval --model whisper-small --per-speaker 0
+
+# 每位说话人 5 条
+python -m bench.asr_eval --model whisper-small --per-speaker 5
 
 # 输出 JSON 归档
 python -m bench.asr_eval --model whisper-small --json results-whisper.json

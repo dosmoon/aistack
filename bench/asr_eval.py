@@ -89,13 +89,27 @@ def index_librispeech(raw_dir: Path) -> list[dict]:
             utt_id, _, text = line.partition(" ")
             audio = trans.parent / f"{utt_id}.flac"
             if audio.exists():
+                speaker = utt_id.split("-", 1)[0]
                 clips.append({
                     "id": utt_id,
+                    "speaker": speaker,
                     "audio": audio,
                     "ground_truth": text,
                 })
     clips.sort(key=lambda c: c["id"])
     return clips
+
+
+def stratified_subset(clips: list[dict], per_speaker: int) -> list[dict]:
+    """Pick first `per_speaker` clips of each speaker (deterministic, by id order)."""
+    seen: dict[str, int] = {}
+    out: list[dict] = []
+    for c in clips:
+        n = seen.get(c["speaker"], 0)
+        if n < per_speaker:
+            out.append(c)
+            seen[c["speaker"]] = n + 1
+    return out
 
 
 # ─── WER (Levenshtein over words) ───────────────────────────────────────────
@@ -171,8 +185,9 @@ def main() -> int:
     p.add_argument("--model", default="whisper-small",
                    help="aistack model id (default: whisper-small)")
     p.add_argument("--language", default="en")
-    p.add_argument("--limit", type=int, default=10,
-                   help="number of clips (0 = all 2703)")
+    p.add_argument("--per-speaker", type=int, default=2,
+                   help="clips per speaker, deterministic by id order "
+                        "(default 2 → 80 clips across 40 speakers; 0 = all 2703)")
     p.add_argument("--base-url", default="http://127.0.0.1:11500")
     p.add_argument("--json", help="write detailed results to this JSON file")
     args = p.parse_args()
@@ -181,13 +196,15 @@ def main() -> int:
     clips = index_librispeech(raw_dir)
     print(f"indexed {len(clips)} clips from LibriSpeech dev-clean")
 
-    if args.limit > 0:
-        clips = clips[: args.limit]
-        print(f"limit={args.limit} → evaluating first {len(clips)}")
+    if args.per_speaker > 0:
+        clips = stratified_subset(clips, args.per_speaker)
+        speakers = len({c["speaker"] for c in clips})
+        print(f"per_speaker={args.per_speaker} → {len(clips)} clips across "
+              f"{speakers} speakers")
 
     # quick health check
     try:
-        h = httpx.get(f"{args.base_url}/health", timeout=3).json()
+        h = httpx.get(f"{args.base_url}/health", timeout=15).json()
         print(f"aistack: {h}")
     except Exception as e:
         print(f"aistack /health unreachable: {e}", file=sys.stderr)
