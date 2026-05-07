@@ -120,13 +120,30 @@ def _bucket_words_by_segment(words: list, segments: list) -> list[list]:
     return out
 
 
+_CLEAR_CACHE_BETWEEN = os.environ.get(
+    "AISTACK_PARAKEET_CLEAR_CACHE_BETWEEN", ""
+).strip().lower() in ("1", "on", "true", "yes", "y")
+
+
 def _reset_gpu_peak() -> None:
     """Clear PyTorch's per-process peak memory counter so the next
     request gets a clean snapshot. Best-effort — silent no-op if
-    torch / CUDA unavailable."""
+    torch / CUDA unavailable.
+
+    If AISTACK_PARAKEET_CLEAR_CACHE_BETWEEN is on, also calls
+    `torch.cuda.empty_cache()` to release torch's reserved-but-unused
+    memory pool back to CUDA. This trades cache-reuse benefit for a
+    clean per-request memory layout — the 2026-05-07 experiments
+    showed a 4x wall-time spread on the same audio depending on
+    pool fragmentation history. Defaults OFF; flip on to test
+    whether clearing improves the worst-case (size-mismatch) path
+    without crippling the best-case (size-matched warm cache) path.
+    """
     try:
         import torch  # type: ignore
         if torch.cuda.is_available():
+            if _CLEAR_CACHE_BETWEEN:
+                torch.cuda.empty_cache()
             torch.cuda.reset_peak_memory_stats()
     except Exception:
         pass
