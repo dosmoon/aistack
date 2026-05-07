@@ -16,6 +16,7 @@ no code changes other than the base URL.
 | `response_format` | no | string | `"json"` (default) \| `"verbose_json"` \| `"text"`. Ignored when `stream=true`. |
 | `translate` | no | bool | If `true`, transcribe to English instead of source language. Whisper-family only; Parakeet / SenseVoice reject with 400. |
 | `stream` | no | bool | If `true`, return Server-Sent Events with one `transcript.text.delta` per segment, ending with `transcript.text.done`. See [`integration.md` §4 — Streaming transcription](integration.md#streaming-transcription-with-streamtrue) for the wire format. Models advertising `supports_streaming=false` in `/v1/models` (currently Parakeet) emit a `warning` event followed by a single delta containing the full transcription. |
+| `segment_granularity` | no | string | `"sentence"` (default) \| `"subtitle"`. How to group word timestamps in the `segments` field. **Affects Parakeet only**; faster-whisper and SenseVoice produce VAD-driven sentence-level segments natively. See [Segment granularity](#segment-granularity) below. |
 
 ### Model selection
 
@@ -101,6 +102,51 @@ Warm steady state. They should be fast.
 ```
 
 Plain text body, no JSON wrapping.
+
+## Segment granularity
+
+The `segments` array in `verbose_json` (and the per-segment SSE deltas
+under `stream=true`) can be grouped two ways:
+
+| Value | Use this when ... | Example cue from the same audio |
+|---|---|---|
+| `"sentence"` (default) | downstream consumes segments as semantic units — line-by-line LLM translation, semantic search, agent reasoning, alignment with another transcription. Each segment is a complete sentence; cue length is unbounded (within a 30 s safety cap). | `"I'll be filling in for Caroline today, obviously."` |
+| `"subtitle"` | downstream emits SRT/VTT directly without doing its own cue-sizing. Each segment is ≤ 70 chars and 1–7 s, following the stable-ts / subtitle-localisation industry standard. **Cuts mid-sentence when the sentence is too long.** | `"So I'll have a brief remarks here and then we'll get to your"` |
+
+### Why default to `"sentence"`
+
+`"subtitle"` was the right shape for one specific consumer (a direct
+SRT writer), but feeding subtitle-sized cues into a per-row LLM
+translator produces broken translations: half-clauses lose tense and
+referent, the LLM has to guess the missing context, target-language
+output becomes incoherent.
+
+The industry convention (OpenAI Whisper verbose_json, WhisperX,
+stable-ts, FunASR) is **`segments` = sentence-level**, with SRT
+cue-sizing as a separate downstream step. aistack follows the same
+convention.
+
+### When to use `"subtitle"`
+
+- A pipeline that **only** generates SRT/VTT and doesn't do
+  any further transformation. Saves implementing your own cue-sizing.
+- A pipeline that already has good downstream cue-sizing and just
+  wants aistack to provide the final formatting for an ASR-only path.
+
+### When to stick with `"sentence"` (default)
+
+- **Any LLM translation pipeline.** Even if the ultimate output is SRT,
+  translate first at sentence granularity, then cue-size the
+  translated text — translation quality dominates everything else.
+- Semantic search, alignment, summarisation, agent reasoning over the
+  transcript.
+- Any consumer that does its own sentence detection and would have to
+  glue subtitle cues back together.
+
+For pipelines that need both (translate sentences AND emit SRT),
+the recommended flow is: `segment_granularity=sentence` for translation,
+then run a downstream cue-sizer (your own, or a library like stable-ts)
+on the translated sentence-level segments to produce SRT.
 
 ## Backend-specific behaviors to know
 

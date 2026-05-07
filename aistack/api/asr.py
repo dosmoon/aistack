@@ -410,12 +410,19 @@ async def transcribe(
     response_format: str = Form("json", description="json | verbose_json | text"),
     translate: bool = Form(False, description="If true, transcribe to English instead of source language. Only Whisper-family models support translation."),
     stream: bool = Form(False, description="If true, return Server-Sent Events with one transcript.text.delta per decoded segment, ending with transcript.text.done. Models with supports_streaming=false in /v1/models still accept this and emit a warning event followed by a single delta. response_format is ignored when stream=true."),
+    segment_granularity: str = Form("sentence", description="How to group word timestamps into the `segments` field. 'sentence' (default) returns full sentences — right input for line-by-line LLM translation, semantic search, agent reasoning. 'subtitle' returns SRT-cue-sized segments (≤70 chars, 1–7s) for clients that emit SRT/VTT directly without a downstream cue-sizing pass. Affects Parakeet only; faster-whisper and SenseVoice produce VAD-driven segments natively."),
 ):
     if response_format not in ("json", "verbose_json", "text"):
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported response_format: {response_format!r}. "
                    "Use 'json', 'verbose_json', or 'text'.",
+        )
+    if segment_granularity not in ("sentence", "subtitle"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported segment_granularity: {segment_granularity!r}. "
+                   "Use 'sentence' or 'subtitle'.",
         )
 
     # Persist upload to a temp file — provider transcribe() takes a path
@@ -441,11 +448,18 @@ async def transcribe(
             obs_state.extra["language"] = language
             obs_state.extra["stream"] = stream
             obs_state.extra["response_format"] = response_format
+            obs_state.extra["segment_granularity"] = segment_granularity
             if obs_state.capture is not None:
                 obs_state.capture.adopt_request_file(audio_path)
 
         try:
             module, kwargs = _select_provider(model, language)
+            # segment_granularity is only meaningful where aistack
+            # synthesises segments from word timestamps (Parakeet).
+            # faster-whisper and SenseVoice produce VAD-driven sentence-
+            # level segments natively; the knob would be a silent no-op.
+            if module is _pk:
+                kwargs["segment_granularity"] = segment_granularity
         except AIError as e:
             return JSONResponse(
                 status_code=http_status_for(e.kind),

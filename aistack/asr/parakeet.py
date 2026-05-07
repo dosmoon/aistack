@@ -281,6 +281,7 @@ def transcribe(
     on_event: EventCallback | None = None,
     on_segment: Callable[[dict], None] | None = None,
     cancel_token=None,
+    segment_granularity: str = "sentence",
 ) -> dict:
     """Transcribe audio locally via NeMo Parakeet TDT.
 
@@ -388,7 +389,9 @@ def transcribe(
             raise AIError(Kind.CANCELLED, "Parakeet", "Cancelled by user")
 
         hyp = results[0] if results else None
-        text, segments_out, words_out = _normalize_hypothesis(hyp)
+        text, segments_out, words_out = _normalize_hypothesis(
+            hyp, granularity=segment_granularity,
+        )
 
         elapsed = int(time.time() - started)
         emit("state_done", segment_count=len(segments_out), elapsed=elapsed)
@@ -404,7 +407,9 @@ def transcribe(
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def _normalize_hypothesis(hyp) -> tuple[str, list, list]:
+def _normalize_hypothesis(
+    hyp, *, granularity: str = "sentence",
+) -> tuple[str, list, list]:
     """Convert a NeMo Hypothesis (or plain string) into our standard shape.
 
     NeMo's transcribe() return shape varies by version:
@@ -443,12 +448,12 @@ def _normalize_hypothesis(hyp) -> tuple[str, list, list]:
 
     # Fallback: NeMo sometimes returns word-level timestamps but no
     # segment-level ones — observed on long-form audio under local
-    # attention. Without segments, downstream SRT generation collapses
-    # the entire transcription into one giant cue, which is unusable for
-    # anything past ~10 s of speech. Synthesize segments from the word
-    # timestamps so SRT / segment-by-segment consumers stay functional.
+    # attention. Synthesize segments from the word timestamps using the
+    # requested granularity so consumers downstream of verbose_json
+    # (LLM translation / agents → "sentence", SRT writers → "subtitle")
+    # get the right shape.
     if not segments_out and words_out:
-        segments_out = _segments_from_words(words_out)
+        segments_out = _segments_from_words(words_out, granularity=granularity)
     # Last-resort fallback: text but no timestamps at all (some old
     # NeMo paths). Single-segment is wrong but better than dropping.
     if text and not segments_out:
@@ -459,10 +464,32 @@ def _normalize_hypothesis(hyp) -> tuple[str, list, list]:
 
 # ── Segment synthesis from word timestamps ───────────────────────────────────
 #
-# Algorithm and thresholds modeled after stable-ts (jianfch/stable-ts), the
-# de-facto OpenAI-Whisper-ecosystem standard for word→subtitle regrouping,
-# cross-checked against the subtitle-localisation industry's CPS / cue-
-# duration conventions.
+# Two granularities are supported, because the right segment shape depends
+# on the consumer:
+#
+#   "sentence"  (default) — semantic units (full sentences). What
+#                            OpenAI/WhisperX/stable-ts return in their
+#                            verbose_json `segments` field. Right input
+#                            for LLM translation, agent reasoning,
+#                            search-by-quote, summarisation, alignment
+#                            with another transcription. WRONG input for
+#                            SRT generation directly — sentences can be
+#                            long, exceed 70 chars / 7 s.
+#
+#   "subtitle"            — SRT-ready cues (≤ 70 chars, 1–7 s, ≥ min_dur)
+#                            for clients that want to write SRT/VTT
+#                            without doing their own cue-sizing pass.
+#                            WRONG input for line-by-line LLM translation
+#                            because mid-sentence breaks lose context.
+#
+# Picking the right default matters: line-by-line LLM translation on
+# subtitle-sized cues produces broken translations (incomplete clauses,
+# tense/agreement errors, lost referents). The industry consensus is
+# verbose_json => sentences, SRT export => downstream cue-sizing.
+#
+# Subtitle-mode thresholds and algorithm are modeled after stable-ts
+# (jianfch/stable-ts), the de-facto OpenAI-Whisper-ecosystem standard
+# for word→subtitle regrouping.
 #
 # Parameter sources:
 #   max_chars     = 70       stable-ts default; ≈ 35 chars × 2 lines, the
@@ -482,45 +509,59 @@ def _normalize_hypothesis(hyp) -> tuple[str, list, list]:
 #     "isp_cm_sp=.* /。/?/？_sg=.5_sp=,* /，++++50_sl=70_cm"
 #   subtitle-localisation conventions: 17 CPS reading-speed cap, 1–7 s cue
 #   duration, 32–42 chars/line × 2 lines.
+# Subtitle-mode parameters (stable-ts defaults + subtitle-localisation
+# industry standards: ≤ 70 chars/cue, 1–7 s cue duration).
 _SEGMENT_MAX_CHARS = 70
 _SEGMENT_MIN_CHARS_FOR_COMMA_SPLIT = 50
 _SEGMENT_MAX_GAP_SEC = 0.5
 _SEGMENT_MAX_DURATION_SEC = 7.0
 _SEGMENT_MIN_DURATION_SEC = 1.0
+
+# Sentence-mode parameters. Looser than subtitle mode by design — we
+# want full semantic units. The hard duration cap is a sanity bound
+# for run-on speech with no punctuation (WhisperX PR #982 reported
+# 60–80 s monster segments without one), not a subtitle constraint.
+_SENTENCE_MAX_GAP_SEC = 0.7
+_SENTENCE_HARD_MAX_DURATION_SEC = 30.0
+
 _SEGMENT_SENTENCE_ENDERS = (".", "!", "?", "。", "！", "？")
 _SEGMENT_COMMA_ENDERS = (",", "，")
 
+VALID_GRANULARITIES = ("sentence", "subtitle")
 
-def _segments_from_words(words: list[dict]) -> list[dict]:
-    """Group word-level timestamps into subtitle-friendly segments.
 
-    Multi-stage split policy mirroring stable-ts's regroup pipeline:
+def _segments_from_words(
+    words: list[dict],
+    *,
+    granularity: str = "sentence",
+) -> list[dict]:
+    """Group word-level timestamps into segments.
 
-        Stage 1: PRIMARY split — sentence-ending punctuation OR silence
-                 gap > max_gap_sec OR current segment exceeds max_chars
-                 OR exceeds max_dur_sec. The min_dur guard prevents
-                 sub-second segments from being split off into flickering
-                 cues; if a candidate split would leave the current
-                 segment under min_dur, we don't flush.
+    granularity:
+        "sentence" (default) — full-sentence segments. Splits on
+            sentence-final punctuation, long silence (> 0.7 s), or a
+            30 s safety cap. Suitable for verbose_json's `segments`
+            field, line-by-line LLM translation, semantic search, etc.
 
-        Stage 2: SECONDARY split — for any post-Stage-1 segment that is
-                 still over max_chars or max_dur, fall back to splitting
-                 at commas (and only if the prefix is at least
-                 min_chars_for_comma_split, so we don't slice tiny
-                 trailing fragments).
-
-        Stage 3: HARD split — any segment still over the limits gets a
-                 length-based forced break.
-
-    The output is suitable for direct SRT emission: every segment is
-    ≥ min_dur, ≤ max_dur, ≤ max_chars."""
+        "subtitle" — SRT-cue-sized segments via stable-ts's regroup
+            pipeline (sentence enders → silence gap → comma fallback
+            → length split). Every cue is ≥ 1 s, ≤ 7 s, ≤ 70 chars.
+            Suitable for direct SRT emission. NOT suitable for
+            line-by-line LLM translation (mid-sentence cuts break
+            translation context)."""
     if not words:
         return []
+    if granularity not in VALID_GRANULARITIES:
+        raise ValueError(
+            f"granularity must be one of {VALID_GRANULARITIES}, got {granularity!r}"
+        )
 
-    # Stage 1
+    if granularity == "sentence":
+        return _publish(_sentence_split(words))
+
+    # granularity == "subtitle": stable-ts three-stage pipeline.
     raw = _stage1_primary_split(words)
 
-    # Stage 2
     refined: list[dict] = []
     for seg in raw:
         if _seg_chars(seg) <= _SEGMENT_MAX_CHARS and _seg_dur(seg) <= _SEGMENT_MAX_DURATION_SEC:
@@ -528,7 +569,6 @@ def _segments_from_words(words: list[dict]) -> list[dict]:
             continue
         refined.extend(_stage2_comma_split(seg))
 
-    # Stage 3
     final: list[dict] = []
     for seg in refined:
         if _seg_chars(seg) <= _SEGMENT_MAX_CHARS and _seg_dur(seg) <= _SEGMENT_MAX_DURATION_SEC:
@@ -536,10 +576,13 @@ def _segments_from_words(words: list[dict]) -> list[dict]:
             continue
         final.extend(_stage3_hard_split(seg))
 
-    # Re-id sequentially and drop the internal _words tag — the public
-    # contract is {id, start, end, text}.
+    return _publish(final)
+
+
+def _publish(segs: list[dict]) -> list[dict]:
+    """Drop internal _words and re-id; emit the public contract."""
     out: list[dict] = []
-    for idx, s in enumerate(final):
+    for idx, s in enumerate(segs):
         out.append({
             "id": idx,
             "start": s["start"],
@@ -547,6 +590,61 @@ def _segments_from_words(words: list[dict]) -> list[dict]:
             "text": s["text"],
         })
     return out
+
+
+def _sentence_split(words: list[dict]) -> list[dict]:
+    """Sentence-level split. Closes the current segment when:
+       - the previous word ends with a sentence-final punctuation, OR
+       - silence gap > _SENTENCE_MAX_GAP_SEC (0.7 s — paragraph/turn
+         boundary), OR
+       - segment duration would exceed _SENTENCE_HARD_MAX_DURATION_SEC
+         (30 s, sanity bound for run-on speech without punctuation).
+    No char/duration constraint suitable for SRT cues — those are
+    deliberately the consumer's job in subtitle export."""
+    segs: list[dict] = []
+    run: list[dict] = []
+    cur_start = 0.0
+    cur_end = 0.0
+
+    def flush() -> None:
+        nonlocal run, cur_start, cur_end
+        if not run:
+            return
+        segs.append(_seg_from_word_run(run))
+        run = []
+
+    for w in words:
+        wt = (w.get("word") or "").strip()
+        if not wt:
+            continue
+        ws = float(w.get("start", 0.0))
+        we = float(w.get("end", ws))
+
+        if not run:
+            run = [w]
+            cur_start = ws
+            cur_end = we
+            continue
+
+        gap = ws - cur_end
+        prev_text = (run[-1].get("word") or "").rstrip()
+        prev_ends_sentence = prev_text.endswith(_SEGMENT_SENTENCE_ENDERS)
+        prospective_dur = we - cur_start
+
+        if (prev_ends_sentence
+                or gap > _SENTENCE_MAX_GAP_SEC
+                or prospective_dur > _SENTENCE_HARD_MAX_DURATION_SEC):
+            flush()
+            run = [w]
+            cur_start = ws
+            cur_end = we
+            continue
+
+        run.append(w)
+        cur_end = we
+
+    flush()
+    return segs
 
 
 def _seg_chars(seg: dict) -> int:
