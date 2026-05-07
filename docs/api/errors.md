@@ -104,13 +104,21 @@ Retry-After: 5
 Content-Type: application/json
 
 {
-  "detail": "aistack asr backend is busy serving another request. Retry after a few seconds."
+  "error": {
+    "kind": "network",
+    "provider": "aistack",
+    "message": "aistack GPU slot is busy (held by asr); rejected llm. Retry after a few seconds."
+  }
 }
 ```
 
-The lock uses FastAPI's stock detail field rather than the structured
-envelope because it is a transport-level signal, not a backend
-diagnostic. Callers can detect it by the presence of `Retry-After`.
+The slot-busy 503 uses the same envelope as every other error path —
+`kind="network"` because the slot-busy state is a transport-level
+back-pressure signal (server is healthy, retry after the
+`Retry-After` hint). Callers should detect it specifically by the
+`Retry-After` header rather than by `kind` alone, since other
+`network` errors (Ollama unreachable, model download failed) are also
+503 and would otherwise be indistinguishable.
 
 ## Consumer-side handling pattern
 

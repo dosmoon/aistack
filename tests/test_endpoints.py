@@ -192,6 +192,12 @@ def test_llm_returns_503_when_slot_busy(client, fake_ollama):
         )
         assert r.status_code == 503
         assert r.headers.get("Retry-After") == "5"
+        # Body uses the standard envelope, not the legacy {"detail": ...} shape.
+        body = r.json()
+        assert "error" in body, f"expected envelope shape, got: {body}"
+        assert body["error"]["kind"] == "network"
+        assert body["error"]["provider"] == "aistack"
+        assert "asr" in body["error"]["message"]  # holder name in message
         # Upstream must NOT have been called.
         assert fake_ollama == []
     finally:

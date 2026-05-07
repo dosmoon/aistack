@@ -371,8 +371,8 @@ def call_with_retry(method, url, max_attempts=5, **kw):
 
 ## 8. Error envelope
 
-Every non-2xx response (other than the bare 503 from the slot lock,
-which uses FastAPI's stock detail format) carries this shape:
+Every non-2xx response carries this shape, including the slot-busy
+503 from §7:
 
 ```json
 {

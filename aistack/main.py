@@ -7,7 +7,9 @@ D3: ASR wired (in-process faster-whisper / parakeet / sensevoice).
 import logging
 import sys
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from aistack import __version__
 from aistack import asr as asr_pkg
@@ -52,6 +54,38 @@ app.include_router(asr_api.router)
 app.include_router(tts_api.router)
 app.include_router(llm_api.router)
 app.include_router(admin_router.router)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _envelope_aware_http_exception_handler(
+    request: Request, exc: StarletteHTTPException
+) -> JSONResponse:
+    """Render HTTPException without wrapping envelope-shape detail.
+
+    aistack's contract is `{"error": {"kind", "provider", "message"}}` for
+    every non-2xx body. FastAPI's stock handler always wraps detail as
+    `{"detail": <whatever>}`, which historically forced the slot-busy
+    503 path to use a bare string and broke envelope consistency.
+
+    Convention: when an HTTPException's `detail` is already a dict
+    containing an `error` key, treat it as an already-formed envelope
+    and emit it unwrapped. Otherwise fall back to FastAPI's stock
+    `{"detail": ...}` shape so existing consumers of generic
+    HTTPException behavior elsewhere (validation errors, 404s, etc.)
+    are unaffected.
+    """
+    detail = exc.detail
+    if isinstance(detail, dict) and "error" in detail:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=detail,
+            headers=exc.headers,
+        )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": detail},
+        headers=exc.headers,
+    )
 
 
 @app.get("/health")

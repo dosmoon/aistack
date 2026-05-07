@@ -43,13 +43,35 @@ _HOLDER: str | None = None
 
 
 def _busy_exception(category: str, retry_after_sec: int) -> HTTPException:
+    """Raise HTTPException whose detail is the standard error envelope.
+
+    Pre-2026-05-07 this used a bare string detail, which caused the
+    response body to be `{"detail": "..."}` — inconsistent with every
+    other aistack error path that returns `{"error": {kind, provider,
+    message}}`. The integration guide (§8) called this out as a
+    documented carve-out clients had to special-case. main.py installs
+    a custom HTTPException handler that detects envelope-shaped detail
+    and emits it unwrapped, so the response body is the standard
+    envelope shape.
+
+    Kind = "network" because the slot-busy state is a transport-level
+    back-pressure signal — the server is healthy and the client should
+    retry after the Retry-After hint, identical client behavior to a
+    transient network error.
+    """
     holder = _HOLDER or "another request"
     return HTTPException(
         status_code=503,
-        detail=(
-            f"aistack GPU slot is busy (held by {holder}); rejected {category}. "
-            f"Retry after a few seconds."
-        ),
+        detail={
+            "error": {
+                "kind": "network",
+                "provider": "aistack",
+                "message": (
+                    f"aistack GPU slot is busy (held by {holder}); "
+                    f"rejected {category}. Retry after a few seconds."
+                ),
+            }
+        },
         headers={"Retry-After": str(retry_after_sec)},
     )
 

@@ -78,6 +78,11 @@ def test_503_message_names_current_holder():
     try:
         with pytest.raises(HTTPException) as ei:
             _gpu_lock.try_acquire_or_503("asr")
-        assert "tts" in ei.value.detail
+        # detail is the standard envelope dict, not a bare string.
+        detail = ei.value.detail
+        assert isinstance(detail, dict) and "error" in detail
+        assert detail["error"]["kind"] == "network"
+        assert detail["error"]["provider"] == "aistack"
+        assert "tts" in detail["error"]["message"]
     finally:
         _gpu_lock.release()
