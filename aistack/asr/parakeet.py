@@ -85,10 +85,33 @@ def _get_model(model_name: str, emit: Callable):
     model = ASRModel.from_pretrained(model_name=model_name)
     _maybe_switch_to_local_attention(model)
     _maybe_enable_subsampling_chunking(model)
-    # NB: _configure_timestamp_decoding() (preserve_alignments=True +
-    # change_decoding_strategy) is the confirmed culprit of the 50-min
-    # 120 s timeout regression — NeMo issue #14714 territory. Stays
-    # uncalled until that bug class is debugged.
+    # NB: DO NOT call _configure_timestamp_decoding(model). It sets
+    # decoding_cfg.preserve_alignments=True, which has two compounding
+    # effects measured live on the 50-min Rubio press-conference audio:
+    #
+    #   1. NeMo's source-level warning ("preserve_alignments is not
+    #      implemented for Frame-Looping + CUDA graphs") means the
+    #      RNNT/TDT decoder falls back from the CUDA-graph fast path
+    #      to a Python-loop path — workspace tensors stop being reused
+    #      across decoder steps.
+    #   2. Per-frame alignment tensors (List of Tuple(Tensor[V+1], ...))
+    #      are retained for the entire acoustic length T (≈75 000 frames
+    #      for 50 min audio), and combined with (1) the working set
+    #      explodes far past VRAM.
+    #
+    # Measured impact on 8 GB VRAM + RTX 4060 Laptop:
+    #   without _configure_timestamp_decoding:  8 GB VRAM + 10 GB shared = 18 GB
+    #   with    _configure_timestamp_decoding:  8 GB VRAM + 30 GB shared = 38 GB
+    # The extra 20 GB spills from VRAM through PCIe into Windows
+    # shared system memory; PCIe bandwidth ≈ 1/30 of GDDR6, so every
+    # kernel that touches the spilled set runs at IO speed. Net effect:
+    # 50-min cache-hit run goes 62 s → ≥120 s, and VideoCraft clients
+    # with the default httpx 120 s read timeout see "ASR hangs forever".
+    #
+    # Word-level timestamps come through anyway (via transcribe(timestamps=True)),
+    # and the empty-NeMo-segment failure mode is handled by
+    # _segments_from_words() in _normalize_hypothesis. So skipping
+    # _configure_timestamp_decoding loses nothing in practice.
     model.eval()
     _model_cache.put(_PROVIDER_TAG, model_name, model, category="asr-main")
     device = _device_str(model)
