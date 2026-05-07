@@ -31,7 +31,8 @@ Model selection rationales — research notes that informed *which* models aista
 
 实证研究笔记。沉淀**经过本地实测且上游官方文档没有完整说明**的发现。这一类资料本身有公开发布价值（计划进 dosmoon Pages），所以独立成 first-class 目录而不是塞在 selection/ 或 design/ 之下。准入门槛、风格约定、与其他文档类别的边界划分见 [research-note/README.md](research-note/README.md)。
 
-- **[parakeet-on-consumer-gpu.md](research-note/parakeet-on-consumer-gpu.md)** — NVIDIA Parakeet TDT 在 8 GB 消费卡上跑长音频的可工作配置 + 三个 NVIDIA 文档没说的连带效应（含实测数据：50min mp3 / VRAM / shared RAM / 推理时长对照）。
+- **[consumer-gpu-asr-baseline.md](research-note/consumer-gpu-asr-baseline.md)** — 消费级 GPU（RTX 4060 8GB）跑 ASR 的端到端性能基线：硬件、软件、负载、RTF / latency / 功耗 / 显存占用全套实测数据。回答"我的场景值不值得自己跑"，不做横向对比，让读者拿数字自己判断。
+- **[parakeet-on-consumer-gpu.md](research-note/parakeet-on-consumer-gpu.md)** — NVIDIA Parakeet TDT 在 8 GB 消费卡上跑长音频的**可工作配置**：哪几个旋钮要开、哪几个不能碰、+20 GB 共享内存陷阱、NVIDIA 文档 7 层信息散落问题。
 
 ---
 

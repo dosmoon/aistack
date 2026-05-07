@@ -34,7 +34,8 @@ aistack 这一年多调过的"上游没写的实情"在累积——尤其是消�
 
 | 笔记 | 主题 | 状态 |
 |---|---|---|
-| [parakeet-on-consumer-gpu.md](parakeet-on-consumer-gpu.md) | NVIDIA Parakeet TDT 在 8 GB 卡上跑长音频的可工作配置 + 三个非显式陷阱 | 2026-05-07 |
+| [consumer-gpu-asr-baseline.md](consumer-gpu-asr-baseline.md) | 消费级 GPU 跑 ASR 的实测基线：50 分钟英文音频 / RTX 4060 8GB / 62s 端到端 / RTF 0.021。读者拿这数据自行决定本地 ASR 是否适合自己场景。 | 2026-05-07 |
+| [parakeet-on-consumer-gpu.md](parakeet-on-consumer-gpu.md) | NVIDIA Parakeet TDT 在 8 GB 卡上跑长音频的**可工作配置**：哪几个旋钮要开、哪几个不能碰、为什么 NVIDIA 官方文档没把这事说全。 | 2026-05-07 |
 
 ## 风格约定
 
