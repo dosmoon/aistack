@@ -84,12 +84,99 @@ def _get_model(model_name: str, emit: Callable):
         ) from e
     model = ASRModel.from_pretrained(model_name=model_name)
     _maybe_switch_to_local_attention(model)
+    _maybe_enable_subsampling_chunking(model)
+    _configure_timestamp_decoding(model)
     # Keep on whatever device NeMo picked (cuda if available, else cpu).
     model.eval()
     _model_cache.put(_PROVIDER_TAG, model_name, model, category="asr-main")
     device = _device_str(model)
     emit("model_loaded", model=model_name, device=device, compute_type="auto")
     return model
+
+
+def _maybe_enable_subsampling_chunking(model) -> None:
+    """Enable adaptive chunking on the FastConformer subsampling module.
+
+    NVIDIA's HuggingFace discussions for parakeet-tdt-0.6b-v2/v3 recommend
+    pairing local attention with `change_subsampling_conv_chunking_factor(1)`
+    for long-form inference; without it the subsampling step still allocates
+    contiguous activations across the whole audio, which OOMs on consumer
+    GPUs and is implicated in the empty-segment-timestamps NeMo bug
+    surfaced for >~30 min audio. `1` means "auto-pick chunking factor",
+    not "no chunking".
+
+    Best-effort — older NeMo lacks this method; we log and continue."""
+    fn = getattr(model, "change_subsampling_conv_chunking_factor", None)
+    if not callable(fn):
+        logger.info(
+            "model.change_subsampling_conv_chunking_factor not available; "
+            "long audio may run without subsampling chunking"
+        )
+        return
+    try:
+        fn(1)
+        logger.info("Parakeet subsampling conv chunking enabled (factor=auto)")
+    except Exception as e:
+        logger.warning(
+            "change_subsampling_conv_chunking_factor failed (%s: %s); continuing",
+            type(e).__name__, e,
+        )
+
+
+def _configure_timestamp_decoding(model) -> None:
+    """Explicitly enable segment-level timestamps via the decoding config.
+
+    NeMo ASR's documented contract for segment timestamps:
+      decoding_cfg.preserve_alignments = True
+      decoding_cfg.compute_timestamps  = True
+      decoding_cfg.segment_seperators  = [".", "?", "!"]    # NB: NeMo's spelling
+      decoding_cfg.word_seperator      = " "
+      asr_model.change_decoding_strategy(decoding_cfg)
+
+    Passing only `transcribe(timestamps=True)` historically gave us word-
+    level timestamps but an empty `timestamp.segment` array on long-form
+    audio under local attention — a confirmed NeMo bug (HF discussion
+    parakeet-tdt-0.6b-v2 #15, NeMo issue #14714). Setting these flags up
+    front routes through NeMo's punctuation-aware segment splitter,
+    which is the model's intended path. Our word-from-words fallback in
+    _normalize_hypothesis stays as defense — NeMo can still return
+    empty segments on edge cases (no punctuation, very short audio).
+
+    Best-effort — older NeMo, hybrid models, or non-RNNT decoders may
+    not expose all these knobs. We swallow and log."""
+    try:
+        from omegaconf import open_dict  # NeMo's own dependency
+    except ImportError:
+        logger.info("omegaconf not available; skipping decoding-cfg tuning")
+        return
+
+    decoding_cfg = getattr(getattr(model, "cfg", None), "decoding", None)
+    change_strategy = getattr(model, "change_decoding_strategy", None)
+    if decoding_cfg is None or not callable(change_strategy):
+        logger.info(
+            "model lacks cfg.decoding / change_decoding_strategy; "
+            "relying on word-from-words segment synthesis"
+        )
+        return
+    try:
+        with open_dict(decoding_cfg):
+            decoding_cfg.preserve_alignments = True
+            decoding_cfg.compute_timestamps = True
+            # NeMo spells the key with one 'e' missing — kept verbatim.
+            decoding_cfg.segment_seperators = [".", "?", "!"]
+            decoding_cfg.word_seperator = " "
+        change_strategy(decoding_cfg)
+        logger.info(
+            "Parakeet decoding strategy: timestamps=on, "
+            "segment_seperators=%s",
+            [".", "?", "!"],
+        )
+    except Exception as e:
+        logger.warning(
+            "change_decoding_strategy failed (%s: %s); falling back to "
+            "transcribe(timestamps=True) + word-synthesis defense",
+            type(e).__name__, e,
+        )
 
 
 def _maybe_switch_to_local_attention(model) -> None:
