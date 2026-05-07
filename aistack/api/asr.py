@@ -120,6 +120,48 @@ def _bucket_words_by_segment(words: list, segments: list) -> list[list]:
     return out
 
 
+def _reset_gpu_peak() -> None:
+    """Clear PyTorch's per-process peak memory counter so the next
+    request gets a clean snapshot. Best-effort — silent no-op if
+    torch / CUDA unavailable."""
+    try:
+        import torch  # type: ignore
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+    except Exception:
+        pass
+
+
+def _capture_gpu_peak(obs_state) -> None:
+    """Fold per-request peak GPU memory into observability extras.
+
+    Captures three numbers from torch.cuda:
+      - vram_peak_mb         max_memory_allocated since last reset
+      - vram_reserved_peak_mb max_memory_reserved since last reset
+      - vram_total_mb        device VRAM size (fixed per device)
+
+    Does NOT capture Windows shared GPU memory — that's a WDDM concept
+    not exposed by torch / pynvml / nvidia-smi. For shared RAM use
+    Task Manager → Performance → GPU during the run.
+
+    Best-effort — silent no-op if torch / CUDA unavailable."""
+    if obs_state is None:
+        return
+    try:
+        import torch  # type: ignore
+        if not torch.cuda.is_available():
+            return
+        device = torch.cuda.current_device()
+        peak_alloc = torch.cuda.max_memory_allocated(device)
+        peak_reserved = torch.cuda.max_memory_reserved(device)
+        _free, total = torch.cuda.mem_get_info(device)
+        obs_state.extra["vram_peak_mb"] = peak_alloc // (1024 * 1024)
+        obs_state.extra["vram_reserved_peak_mb"] = peak_reserved // (1024 * 1024)
+        obs_state.extra["vram_total_mb"] = total // (1024 * 1024)
+    except Exception:
+        pass
+
+
 def _record_obs_completion(obs_state, result: dict, started_monotonic: float) -> None:
     """At stream/non-stream done, fold the result-derived metrics
     (audio_sec, detected_language, rtf) into the request's observability
@@ -132,6 +174,7 @@ def _record_obs_completion(obs_state, result: dict, started_monotonic: float) ->
     obs_state.extra["detected_language"] = result.get("language")
     if duration > 0 and elapsed_ms > 0:
         obs_state.extra["rtf"] = round((elapsed_ms / 1000.0) / duration, 4)
+    _capture_gpu_peak(obs_state)
 
 
 async def _stream_transcribe(
@@ -517,6 +560,9 @@ async def transcribe(
             obs_state.extra["segment_granularity"] = segment_granularity
             if obs_state.capture is not None:
                 obs_state.capture.adopt_request_file(audio_path)
+        # Reset peak so this request's GPU footprint is measured cleanly
+        # rather than accumulating with prior requests' allocations.
+        _reset_gpu_peak()
 
         try:
             module, kwargs = _select_provider(model, language)
