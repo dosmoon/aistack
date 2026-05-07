@@ -84,8 +84,18 @@ def _get_model(model_name: str, emit: Callable):
         ) from e
     model = ASRModel.from_pretrained(model_name=model_name)
     _maybe_switch_to_local_attention(model)
-    _maybe_enable_subsampling_chunking(model)
-    _configure_timestamp_decoding(model)
+    # NB: _maybe_enable_subsampling_chunking() and _configure_timestamp_
+    # decoding() exist below but are NOT called by default. Live
+    # measurement (2026-05-07) showed that turning them on doubled
+    # inference time on the 50-min Rubio press-conference audio:
+    # cache-hit run went from 62 s to ≥ 120 s and clients hit their
+    # default httpx timeout. Suspected interaction between
+    # preserve_alignments=True (the open NeMo issue #14714) and/or
+    # change_decoding_strategy() resetting the local-attention switch
+    # we set just above. The word-from-words segment synthesis in
+    # _segments_from_words() already covers the empty-NeMo-segment
+    # case in production, so these helpers are kept available for
+    # future opt-in (env flag) but not on the default path.
     # Keep on whatever device NeMo picked (cuda if available, else cpu).
     model.eval()
     _model_cache.put(_PROVIDER_TAG, model_name, model, category="asr-main")
