@@ -62,13 +62,26 @@ OpenAI API compatible where the OpenAI spec applies:
 - `POST /v1/audio/transcriptions` mirrors OpenAI's Whisper API.
 - `POST /v1/audio/speech` mirrors OpenAI's TTS API.
 - `POST /v1/chat/completions` mirrors OpenAI's chat completion API.
-- `GET /v1/models` mirrors OpenAI's model list shape, with an
-  aistack-specific `capabilities` field added per entry.
+- `GET /v1/models` mirrors OpenAI's model list shape, with aistack
+  extension fields (`capabilities`, `languages`, `is_routing_alias`,
+  `supports_streaming`) added per entry. See [models.md](models.md).
 
 Where aistack adds capabilities beyond the OpenAI spec (e.g.
 SenseVoice's `task_type` parameter, vLLM-Omni's voice clone fields),
 they are exposed as extra optional fields. Standard OpenAI clients
 that ignore unknown fields work without modification.
+
+### Streaming
+
+All three capability endpoints support streaming where the underlying
+model supports it. Discovery is via the `supports_streaming` field
+on each `/v1/models` entry; the wire format is the standard SSE
+shape OpenAI uses for that capability (`transcript.text.delta` /
+`transcript.text.done` for ASR, OpenAI chat-completion deltas for
+LLM, raw audio chunks via vLLM-Omni's streaming endpoint for TTS).
+ASR adds an aistack `warning` event for the rare case where a
+selected model does not natively stream — see
+[`integration.md` §4](integration.md#streaming-transcription-with-streamtrue).
 
 ## Endpoints
 

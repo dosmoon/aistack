@@ -52,10 +52,14 @@ Content-Type: audio/wav
 ```
 
 Raw audio bytes. The body is the entire WAV file (RIFF header + PCM
-samples). Streaming is not yet exposed at the aistack layer, but
-vLLM-Omni's underlying `/v1/audio/speech/stream` endpoint is reachable
-through the same proxy at `/v1/audio/speech/stream` (see *Pass-through
-endpoints* below).
+samples) — `/v1/audio/speech` itself is non-streaming.
+
+Streaming synthesis is reachable through the proxy via vLLM-Omni's
+`/v1/audio/speech/stream` endpoint (see *Pass-through endpoints*
+below). The TTS entry in [`/v1/models`](models.md) advertises
+`supports_streaming: true` because of this pass-through path; the
+streaming wire format is whatever vLLM-Omni emits there (chunked
+audio bytes), not the `transcript.text.delta` SSE shape used by ASR.
 
 aistack does not transcode. Output is whatever vLLM-Omni emits — at
 the time of writing, **24 kHz mono 16-bit PCM WAV** regardless of the

@@ -31,7 +31,7 @@ OpenAI-spec optional fields (forwarded as-is):
 
 | Field | Type | Description |
 |---|---|---|
-| `stream` | bool | If `true`, response is sent as Server-Sent Events. |
+| `stream` | bool | If `true`, response is sent as Server-Sent Events. Every Ollama-served LLM advertises `supports_streaming: true` in [`/v1/models`](models.md), so this is always honored. |
 | `temperature` | number | 0.0 (deterministic) to 2.0. |
 | `top_p` | number | Nucleus sampling cutoff. |
 | `max_tokens` | int | Cap on generated tokens. |
