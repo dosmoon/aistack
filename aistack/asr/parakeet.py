@@ -192,6 +192,7 @@ def transcribe(
     language: str | None = None,
     translate: bool = False,
     on_event: EventCallback | None = None,
+    on_segment: Callable[[dict], None] | None = None,
     cancel_token=None,
 ) -> dict:
     """Transcribe audio locally via NeMo Parakeet TDT.
@@ -208,6 +209,13 @@ def transcribe(
                      mirror faster_whisper for UI consistency:
                        request_summary_local / model_loading / model_loaded
                        state_processing / state_done
+        on_segment:  Accepted for signature parity with the other ASR
+                     providers but never invoked — Parakeet's transcribe()
+                     is one eager call returning all segments at once,
+                     not an incremental generator. The streaming path
+                     in api/asr.py handles Parakeet by emitting a
+                     warning + single-delta SSE downgrade response
+                     rather than driving on_segment from this layer.
         cancel_token: Cooperative cancel checked at coarse boundaries
                      (Parakeet's transcribe() is one blocking call — cannot
                      interrupt mid-inference).

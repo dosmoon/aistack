@@ -12,6 +12,7 @@ models are cached per (model, device, compute_type) tuple so repeat
 transcriptions in the same session don't re-load weights.
 """
 
+import logging
 import os
 import time
 from typing import Callable
@@ -96,6 +97,7 @@ def transcribe(
     language: str | None = None,
     translate: bool = False,
     on_event: EventCallback | None = None,
+    on_segment: Callable[[dict], None] | None = None,
     cancel_token=None,
 ) -> dict:
     """Transcribe audio locally via faster-whisper.
@@ -117,6 +119,14 @@ def transcribe(
                       "request_summary", "model_loading", "model_loaded",
                       "state_processing" (segment_count, elapsed),
                       "state_done" (segment_count, elapsed).
+        on_segment:   Optional callback invoked after each segment is
+                      decoded. Receives the same per-segment dict that
+                      gets appended to `segments` in the return value
+                      (with `id`, `start`, `end`, `text`, plus a
+                      `words` list of per-word dicts when timestamps
+                      are available). Used by the SSE streaming path
+                      to emit transcript.text.delta events as soon as
+                      the model produces them.
         cancel_token: Cooperatively checked between segments.
 
     Returns:
@@ -209,13 +219,23 @@ def transcribe(
         if seg_text:
             text_parts.append(seg_text)
 
+        seg_words: list[dict] = []
         if seg.words:
             for w in seg.words:
-                words_out.append({
+                wd = {
                     "start": float(w.start),
                     "end":   float(w.end),
                     "word":  (w.word or "").strip(),
-                })
+                }
+                seg_words.append(wd)
+                words_out.append(wd)
+
+        if on_segment is not None:
+            try:
+                on_segment({**seg_dict, "words": seg_words})
+            except Exception:
+                logger = logging.getLogger("aistack.asr.faster_whisper")
+                logger.exception("on_segment callback raised; ignoring")
 
         if (idx + 1) % 5 == 0:
             emit("state_processing",

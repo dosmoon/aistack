@@ -214,6 +214,86 @@ for seg in result["segments"]:
 timestamps; clients should treat its absence as "not available for
 this backend / configuration", not as an error.
 
+### Streaming transcription with `stream=true`
+
+For long audio (or any case where the client wants partial results
+as they become available), pass `stream=true` as a form field. The
+response is `text/event-stream` instead of JSON; events follow
+OpenAI's transcription streaming shape with one extension event.
+
+Example:
+
+```bash
+curl -N -X POST http://127.0.0.1:11500/v1/audio/transcriptions \
+  -F "file=@long_lecture.mp3" \
+  -F "model=whisper-small" \
+  -F "language=en" \
+  -F "stream=true"
+```
+
+Wire format (one event per `data: { ... }\n\n` frame):
+
+```
+data: {"type": "transcript.text.delta", "delta": "Hello world.",
+       "segment": {"start": 0.0, "end": 1.7,
+                   "words": [{"start":0.0,"end":0.4,"word":"Hello"}, ...]}}
+
+data: {"type": "transcript.text.delta", "delta": "This is the second segment.",
+       "segment": {"start": 1.7, "end": 4.2, "words": [...]}}
+
+... (more deltas as the model produces segments) ...
+
+data: {"type": "transcript.text.done", "language": "en", "duration": 1020.0}
+```
+
+#### Event types
+
+| `type` | Meaning |
+|---|---|
+| `transcript.text.delta` | Incremental segment. `delta` is the segment text; `segment` carries start/end in seconds and per-word timestamps. |
+| `transcript.text.done` | End of transcription. Carries detected language and total duration. |
+| `warning` (aistack extension) | Emitted **before** any delta when the chosen model does not support real streaming. Carries `code`, `model`, `message`. The transcription still arrives as a single delta after the warning. |
+| `error` (aistack extension) | Mid-stream failure. Body matches the standard error envelope shape (`{kind, provider, message}`). No further events follow. |
+
+#### Streaming-capable vs not
+
+Models advertise their streaming behavior via `supports_streaming` in
+`/v1/models`. As of the current contract:
+
+- `whisper-small` (and any whisper size) — **streams natively**:
+  one delta per decoded segment, no warning.
+- `iic/SenseVoiceSmall` — **streams natively**: one delta per VAD chunk,
+  no warning.
+- `nvidia/parakeet-tdt-0.6b-v3` — **does not stream**: client gets a
+  `warning` event up front, then one delta with the full text, then
+  `transcript.text.done`. Selecting Parakeet via the picker is fine,
+  but aware clients should hide it from streaming-only workflows by
+  filtering on `supports_streaming`.
+- `auto` — streams when the language hint routes to a streaming-capable
+  backend, downgrades when it routes to a non-streaming one.
+  `supports_streaming` on the alias entry is the AND of the candidate
+  pool, so it is `false` whenever Parakeet is installed.
+
+The downgrade path delivers the full transcription in one event rather
+than failing the request, so OpenAI-shape clients that always send
+`stream=true` get a working response. The `warning` event is the
+discoverable signal; aware clients should branch on it.
+
+#### Cancellation
+
+Same pattern as the LLM stream (§6): close the HTTP connection. The
+gateway polls `request.is_disconnected()` and propagates a cancel
+token into the worker thread, which checks it between segments.
+Long-audio transcriptions abort within ~1 second of disconnect for
+streaming-capable backends; Parakeet (downgrade path) honors cancel
+only at coarse boundaries.
+
+#### `response_format` interaction
+
+When `stream=true`, `response_format` is ignored — the response is
+always SSE in the shape above. Consumers that need to choose between
+plain text / json / verbose_json should leave `stream=false`.
+
 ---
 
 ## 5. Step 3 — Generate speech (TTS)

@@ -257,6 +257,124 @@ def test_parakeet_english_local_attention_load():
 
 # ── Tests: cross-backend hot-swap ────────────────────────────────────────────
 
+def test_sse_streaming_whisper_emits_multiple_deltas():
+    """faster-whisper streams natively: one transcript.text.delta per
+    decoded segment, ending with transcript.text.done.
+
+    Locks in the contract that the SSE path is a real incremental
+    stream when the backend supports it (faster-whisper's segment
+    generator), not a single-shot dressed up as SSE.
+    """
+    from fastapi.testclient import TestClient
+    _require_faster_whisper()
+    audio = _audio_path("en.mp3")
+
+    from aistack.main import app
+    events = _consume_sse(TestClient(app), audio, "whisper-small", "en")
+
+    deltas = [e for e in events if e["type"] == "transcript.text.delta"]
+    dones = [e for e in events if e["type"] == "transcript.text.done"]
+    warnings = [e for e in events if e["type"] == "warning"]
+
+    assert deltas, f"expected at least one transcript.text.delta; got events: {events}"
+    assert len(dones) == 1, f"expected exactly one transcript.text.done; got: {dones}"
+    assert not warnings, (
+        f"streaming-capable model should not emit a warning event; got: {warnings}"
+    )
+
+    full_text = " ".join(e["delta"] for e in deltas).strip()
+    assert "tribal" in full_text.lower() and "chieftain" in full_text.lower(), (
+        f"expected 'tribal chieftain' in concatenated deltas; got: {full_text!r}"
+    )
+
+
+def test_sse_streaming_sensevoice_emits_per_chunk_deltas():
+    """SenseVoice streams via the same per-VAD-chunk loop it uses
+    offline. Emits one transcript.text.delta per sub-segment, then
+    transcript.text.done. No warning event (streaming-capable).
+    """
+    from fastapi.testclient import TestClient
+    _require_sensevoice()
+    audio = _audio_path("en.mp3")
+
+    from aistack.main import app
+    events = _consume_sse(TestClient(app), audio, "sensevoice", "en")
+
+    deltas = [e for e in events if e["type"] == "transcript.text.delta"]
+    dones = [e for e in events if e["type"] == "transcript.text.done"]
+    warnings = [e for e in events if e["type"] == "warning"]
+
+    assert deltas, "expected at least one transcript.text.delta"
+    assert len(dones) == 1, f"expected exactly one done; got: {dones}"
+    assert not warnings, "SenseVoice supports streaming; no warning expected"
+
+    full_text = " ".join(e["delta"] for e in deltas)
+    # SenseVoice sample is "The tribal chieftain..." — same audio as Whisper test.
+    assert "tribal" in full_text.lower()
+
+
+def test_sse_streaming_parakeet_downgrades_with_warning():
+    """Parakeet's stream=true response is a single-event downgrade with
+    an up-front warning. Locks in the contract that supports_streaming=
+    false on /v1/models is honored at the endpoint with a discoverable
+    warning event, not a silent quality drop or a hard rejection.
+    """
+    from fastapi.testclient import TestClient
+    _require_parakeet()
+    audio = _audio_path("en.mp3")
+
+    from aistack.main import app
+    events = _consume_sse(TestClient(app), audio, "parakeet", "en")
+
+    warnings = [e for e in events if e["type"] == "warning"]
+    deltas = [e for e in events if e["type"] == "transcript.text.delta"]
+    dones = [e for e in events if e["type"] == "transcript.text.done"]
+
+    assert len(warnings) == 1, (
+        f"expected exactly one warning event up front; got: {warnings}"
+    )
+    assert warnings[0]["code"] == "streaming_not_supported"
+    assert "parakeet" in warnings[0]["model"].lower()
+    # The warning must be the first event so aware clients can detect
+    # the downgrade before consuming any delta content.
+    assert events[0]["type"] == "warning"
+
+    assert len(deltas) == 1, (
+        f"downgrade path should emit exactly one transcript.text.delta; got: {deltas}"
+    )
+    assert "tribal" in deltas[0]["delta"].lower(), (
+        f"expected real transcription in the single delta; got: {deltas[0]['delta']!r}"
+    )
+
+    assert len(dones) == 1, f"expected exactly one done event; got: {dones}"
+
+
+def _consume_sse(client, audio_path, model: str, language: str) -> list[dict]:
+    """Helper: POST a streaming transcription request, parse the SSE body
+    into a list of decoded JSON event dicts."""
+    import json as _json
+    with open(audio_path, "rb") as f:
+        with client.stream(
+            "POST",
+            "/v1/audio/transcriptions",
+            files={"file": (audio_path.name, f, "audio/mpeg")},
+            data={"model": model, "language": language, "stream": "true"},
+        ) as r:
+            assert r.status_code == 200, f"streaming endpoint must return 200; got {r.status_code}"
+            assert "text/event-stream" in r.headers.get("content-type", ""), (
+                f"streaming response must declare text/event-stream; got: {r.headers!r}"
+            )
+            events: list[dict] = []
+            for raw_line in r.iter_lines():
+                line = raw_line.strip() if isinstance(raw_line, str) else raw_line.decode("utf-8").strip()
+                if not line:
+                    continue
+                if not line.startswith("data: "):
+                    continue
+                events.append(_json.loads(line[6:]))
+            return events
+
+
 def test_hot_swap_evicts_asr_main_peers():
     """Loading two ASR backends in sequence must hot-swap, not coexist.
 

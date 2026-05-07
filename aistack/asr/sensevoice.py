@@ -222,6 +222,7 @@ def transcribe(
     language: str | None = None,
     translate: bool = False,
     on_event: EventCallback | None = None,
+    on_segment: Callable[[dict], None] | None = None,
     cancel_token=None,
 ) -> dict:
     """Transcribe audio locally via FunASR fsmn-vad + SenseVoiceSmall.
@@ -237,6 +238,12 @@ def transcribe(
         translate:   Not supported. Raises if True.
         on_event:    Optional callback(event_type, **kwargs). Same vocabulary
                      as parakeet_local for UI consistency.
+        on_segment:  Optional callback invoked after each subtitle-friendly
+                     sub-segment is emitted from a VAD chunk. Receives the
+                     same per-segment dict that gets appended to `segments`
+                     plus a `words` list. Used by the SSE streaming path
+                     to push transcript.text.delta events as the VAD loop
+                     produces them.
         cancel_token: Cooperative cancel checked between VAD chunks.
 
     Returns:
@@ -376,15 +383,24 @@ def transcribe(
             )
 
             for sub in sub_segs:
-                segments_out.append({
+                seg_entry = {
                     "id":    seg_id,
                     "start": sub["start"],
                     "end":   sub["end"],
                     "text":  sub["text"],
-                })
+                }
+                segments_out.append(seg_entry)
                 words_out.extend(sub["words"])
                 text_parts.append(sub["text"])
                 seg_id += 1
+                if on_segment is not None:
+                    try:
+                        on_segment({**seg_entry, "words": sub["words"]})
+                    except Exception:
+                        import logging
+                        logging.getLogger("aistack.asr.sensevoice").exception(
+                            "on_segment callback raised; ignoring"
+                        )
 
             if (chunk_idx + 1) % 5 == 0:
                 emit("state_processing",

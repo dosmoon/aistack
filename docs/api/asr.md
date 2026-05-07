@@ -13,8 +13,9 @@ no code changes other than the base URL.
 | `file` | yes | binary | Audio file. Any ffmpeg-readable format: mp3, mp4, wav, m4a, flac, ogg, webm, mkv. |
 | `model` | yes | string | Model id or short alias. See *Model selection* below. |
 | `language` | no | string | ISO 639-1 hint (`"en"`, `"zh"`, `"ja"`, ...). Omit or pass `null`/`""` for auto-detect. |
-| `response_format` | no | string | `"json"` (default) \| `"verbose_json"` \| `"text"` |
+| `response_format` | no | string | `"json"` (default) \| `"verbose_json"` \| `"text"`. Ignored when `stream=true`. |
 | `translate` | no | bool | If `true`, transcribe to English instead of source language. Whisper-family only; Parakeet / SenseVoice reject with 400. |
+| `stream` | no | bool | If `true`, return Server-Sent Events with one `transcript.text.delta` per segment, ending with `transcript.text.done`. See [`integration.md` §4 — Streaming transcription](integration.md#streaming-transcription-with-streamtrue) for the wire format. Models advertising `supports_streaming=false` in `/v1/models` (currently Parakeet) emit a `warning` event followed by a single delta containing the full transcription. |
 
 ### Model selection
 
@@ -25,11 +26,9 @@ The `model` field accepts any of:
 | `whisper-tiny` `whisper-base` `whisper-small` `whisper-medium` `whisper-large-v3` `whisper-large-v3-turbo` `whisper-distil-large-v3` | faster-whisper (CTranslate2) | All Whisper sizes from the OpenAI catalog. |
 | `whisper-1` | faster-whisper | Maps to `whisper-small` for OpenAI-spec compatibility (OpenAI's only public Whisper id). |
 | `tiny` `base` `small` `medium` ... | faster-whisper | Bare size aliases — same as the `whisper-` prefix forms. |
-| `parakeet` or `nvidia/parakeet-tdt-0.6b-v3` | NVIDIA NeMo | 25 European languages, ASR-only (no `translate`). |
+| `parakeet` or `nvidia/parakeet-tdt-0.6b-v3` | NVIDIA NeMo | 25 European languages, ASR-only (no `translate`). Does not support streaming — see *Streaming* below. |
 | `sensevoice` or `iic/SenseVoiceSmall` | Alibaba FunASR | Mandarin / Cantonese / Japanese / Korean / English. Best for CJK content. |
-
-Future versions may add an `auto` selector that picks a backend based
-on the `language` hint; this is not yet implemented (D6 territory).
+| `auto` (or empty) | aistack router | Picks based on `language`: CJK → SenseVoice, European → Parakeet, else → Whisper-small. Falls back gracefully when a preferred backend is not installed. |
 
 ### Multipart example
 

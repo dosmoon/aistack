@@ -21,17 +21,18 @@ requires a missing library.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import shutil
 import tempfile
-from typing import Tuple
+from typing import AsyncIterator, Tuple
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from aistack import _gpu_lock
-from aistack.asr import faster_whisper as _fw
+from aistack.asr import _SUPPORTS_STREAMING, faster_whisper as _fw
 from aistack.asr import installed_providers
 from aistack.asr import parakeet as _pk
 from aistack.asr import sensevoice as _sv
@@ -70,6 +71,200 @@ async def _watch_disconnect(request: Request, token: _CancelToken) -> None:
             await asyncio.sleep(0.5)
     except asyncio.CancelledError:
         pass
+
+
+# Each module maps to its provider id for _SUPPORTS_STREAMING lookup.
+_MODULE_TO_PROVIDER_ID = {
+    _fw: "faster-whisper",
+    _pk: "parakeet",
+    _sv: "sensevoice",
+}
+
+
+def _sse_event(payload: dict) -> bytes:
+    """Encode a dict as a single SSE 'data: ...\\n\\n' frame."""
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+
+
+async def _stream_transcribe(
+    *,
+    module,
+    audio_path: str,
+    language: str | None,
+    translate: bool,
+    kwargs: dict,
+    request: Request,
+    supports_streaming: bool,
+    canonical_model_id: str,
+    tmp_dir: str,
+) -> AsyncIterator[bytes]:
+    """SSE event stream for a transcription request.
+
+    The slot is already held by the caller (route handler), so this
+    generator only needs to release it at the end. Owns the temp-dir
+    cleanup and the disconnect-watcher task lifetime so they survive
+    until the stream is fully consumed (the route function returns
+    early once the StreamingResponse object is constructed).
+
+    Two paths:
+
+      * `supports_streaming=True` — runs `module.transcribe` in a
+        worker thread with an on_segment callback that pushes each
+        decoded segment onto an asyncio.Queue. Yields one
+        `transcript.text.delta` per segment, then `transcript.text.done`.
+
+      * `supports_streaming=False` — runs `module.transcribe` blockingly,
+        then emits a `warning` event explaining the downgrade, the full
+        text as a single `transcript.text.delta`, then
+        `transcript.text.done`. The warning is the first event so
+        aware clients can detect the downgrade before consuming any
+        delta.
+
+    Errors are emitted as in-stream `error` events with the standard
+    envelope shape (HTTP layer is already 200 SSE by the time we know
+    something went wrong).
+    """
+    cancel_token = _CancelToken()
+    watcher = asyncio.create_task(_watch_disconnect(request, cancel_token))
+
+    try:
+        if not supports_streaming:
+            # Downgrade path — declare the limitation up front, then
+            # serve the request as if it were non-streaming, emitting
+            # the result as a single delta event.
+            yield _sse_event({
+                "type": "warning",
+                "code": "streaming_not_supported",
+                "model": canonical_model_id,
+                "message": (
+                    f"Model {canonical_model_id!r} does not support "
+                    "streaming; returning full transcription as a single "
+                    "delta event. See /v1/models for streaming-capable models."
+                ),
+            })
+            try:
+                result = await asyncio.to_thread(
+                    module.transcribe,
+                    audio_path,
+                    language=language,
+                    translate=translate,
+                    cancel_token=cancel_token,
+                    **kwargs,
+                )
+            except AIError as e:
+                logger.warning("ASR provider error (downgrade path): %s", e)
+                yield _sse_event({
+                    "type": "error",
+                    "error": e.to_envelope()["error"],
+                })
+                return
+            except Exception as e:
+                logger.exception("Unexpected ASR failure (downgrade path)")
+                yield _sse_event({
+                    "type": "error",
+                    "error": {
+                        "kind": "unknown",
+                        "provider": "aistack",
+                        "message": f"Internal error: {e}",
+                    },
+                })
+                return
+
+            yield _sse_event({
+                "type": "transcript.text.delta",
+                "delta": result.get("text", ""),
+                "segment": {
+                    "start": 0.0,
+                    "end": float(result.get("duration", 0.0)),
+                    "words": result.get("words", []),
+                },
+            })
+            yield _sse_event({
+                "type": "transcript.text.done",
+                "language": result.get("language"),
+                "duration": float(result.get("duration", 0.0)),
+            })
+            return
+
+        # Real streaming path — bridge a worker-thread on_segment callback
+        # into an asyncio.Queue, async-iterate the queue, yield SSE events.
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+
+        def _on_segment(seg: dict) -> None:
+            try:
+                loop.call_soon_threadsafe(queue.put_nowait, ("segment", seg))
+            except RuntimeError:
+                # Event loop is closed (request torn down). Nothing to do.
+                pass
+
+        async def _run_worker() -> None:
+            try:
+                result = await asyncio.to_thread(
+                    module.transcribe,
+                    audio_path,
+                    language=language,
+                    translate=translate,
+                    on_segment=_on_segment,
+                    cancel_token=cancel_token,
+                    **kwargs,
+                )
+                await queue.put(("done", result))
+            except AIError as e:
+                await queue.put(("error", e))
+            except Exception as e:
+                logger.exception("Unexpected ASR failure (streaming path)")
+                await queue.put(("error", AIError(
+                    Kind.UNKNOWN, "aistack",
+                    f"Internal error: {e}", raw=e,
+                )))
+
+        worker_task = asyncio.create_task(_run_worker())
+
+        try:
+            while True:
+                event_type, payload = await queue.get()
+                if event_type == "segment":
+                    yield _sse_event({
+                        "type": "transcript.text.delta",
+                        "delta": payload.get("text", ""),
+                        "segment": {
+                            "start": float(payload.get("start", 0.0)),
+                            "end": float(payload.get("end", 0.0)),
+                            "words": payload.get("words", []),
+                        },
+                    })
+                elif event_type == "done":
+                    yield _sse_event({
+                        "type": "transcript.text.done",
+                        "language": payload.get("language"),
+                        "duration": float(payload.get("duration", 0.0)),
+                    })
+                    break
+                elif event_type == "error":
+                    err: AIError = payload
+                    logger.warning("ASR streaming error: %s", err)
+                    yield _sse_event({
+                        "type": "error",
+                        "error": err.to_envelope()["error"],
+                    })
+                    break
+        finally:
+            # Wait for the worker thread to settle so we don't leak a
+            # GPU operation past the response. Cancel-token will have
+            # been set by the disconnect watcher if the client bailed.
+            try:
+                await worker_task
+            except Exception:
+                pass
+    finally:
+        watcher.cancel()
+        try:
+            await watcher
+        except (asyncio.CancelledError, Exception):
+            pass
+        _gpu_lock.release()
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 router = APIRouter(tags=["asr"])
 
@@ -189,6 +384,7 @@ async def transcribe(
     language: str | None = Form(None, description="ISO 639-1 code (e.g. 'en', 'zh'). Omit for auto-detect."),
     response_format: str = Form("json", description="json | verbose_json | text"),
     translate: bool = Form(False, description="If true, transcribe to English instead of source language. Only Whisper-family models support translation."),
+    stream: bool = Form(False, description="If true, return Server-Sent Events with one transcript.text.delta per decoded segment, ending with transcript.text.done. Models with supports_streaming=false in /v1/models still accept this and emit a warning event followed by a single delta. response_format is ignored when stream=true."),
 ):
     if response_format not in ("json", "verbose_json", "text"):
         raise HTTPException(
@@ -199,9 +395,13 @@ async def transcribe(
 
     # Persist upload to a temp file — provider transcribe() takes a path
     # because all three backends prefer ffmpeg-readable files over streams.
+    # When streaming, the temp dir is cleaned up by the streaming
+    # generator's finally so it survives until the worker thread is done.
     tmp_dir = tempfile.mkdtemp(prefix="aistack_asr_")
     suffix = os.path.splitext(file.filename or "")[1] or ".bin"
     audio_path = os.path.join(tmp_dir, f"upload{suffix}")
+    cleanup_on_exit = True
+
     try:
         with open(audio_path, "wb") as fh:
             shutil.copyfileobj(file.file, fh)
@@ -212,6 +412,33 @@ async def transcribe(
             return JSONResponse(
                 status_code=http_status_for(e.kind),
                 content=e.to_envelope(),
+            )
+
+        if stream:
+            # SSE path. Acquire the slot synchronously here so a busy
+            # gateway returns 503 + envelope cleanly (rather than starting
+            # a streaming response and then yielding an in-stream error).
+            # The streaming generator owns release + temp-dir cleanup
+            # from this point on, so we tell the outer finally to skip.
+            _gpu_lock.try_acquire_or_503("asr")
+            cleanup_on_exit = False
+            provider_id = _MODULE_TO_PROVIDER_ID[module]
+            supports = _SUPPORTS_STREAMING[provider_id]
+            canonical_id = kwargs.get("model_name") or model or "auto"
+            return StreamingResponse(
+                _stream_transcribe(
+                    module=module,
+                    audio_path=audio_path,
+                    language=language,
+                    translate=translate,
+                    kwargs=kwargs,
+                    request=request,
+                    supports_streaming=supports,
+                    canonical_model_id=canonical_id,
+                    tmp_dir=tmp_dir,
+                ),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache"},
             )
 
         # Single-task GPU policy: at most one inference at a time across
@@ -265,4 +492,5 @@ async def transcribe(
             return PlainTextResponse(content=payload)
         return payload
     finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        if cleanup_on_exit:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
