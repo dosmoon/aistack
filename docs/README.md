@@ -27,6 +27,12 @@ Model selection rationales — research notes that informed *which* models aista
 
 - **[local_ai.md](progress/local_ai.md)** — L1~L3 chronicle of every install, debug, and tuning session that happened in VideoCraft before the decoupling. Captures the why-this-config-not-that-one knowledge that would otherwise rot. *Migrated from VideoCraft.*
 
+## research-note/
+
+实证研究笔记。沉淀**经过本地实测且上游官方文档没有完整说明**的发现。这一类资料本身有公开发布价值（计划进 dosmoon Pages），所以独立成 first-class 目录而不是塞在 selection/ 或 design/ 之下。准入门槛、风格约定、与其他文档类别的边界划分见 [research-note/README.md](research-note/README.md)。
+
+- **[parakeet-on-consumer-gpu.md](research-note/parakeet-on-consumer-gpu.md)** — NVIDIA Parakeet TDT 在 8 GB 消费卡上跑长音频的可工作配置 + 三个 NVIDIA 文档没说的连带效应（含实测数据：50min mp3 / VRAM / shared RAM / 推理时长对照）。
+
 ---
 
 **On migrated documents.** Files marked *Migrated from VideoCraft* are
