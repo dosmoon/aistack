@@ -88,6 +88,38 @@ def _sse_event(payload: dict) -> bytes:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
 
 
+def _bucket_words_by_segment(words: list, segments: list) -> list[list]:
+    """Distribute a flat word-timestamp list into per-segment word lists.
+
+    Returns a list of length len(segments); element i is the list of
+    word-dicts whose start time falls inside segments[i]'s [start, end].
+    Both inputs are assumed time-sorted (NeMo emits them that way).
+
+    A word is assigned to the segment whose [start, end] interval
+    contains the word's start timestamp. Words before the first segment
+    or after the last (rare; only happens at audio edges) are dropped
+    from the per-segment views — they're still in the top-level `words`
+    list emitted in non-stream verbose_json. Single-pointer walk for
+    O(N+M) cost rather than O(N*M).
+    """
+    out: list[list] = [[] for _ in segments]
+    if not words or not segments:
+        return out
+    seg_idx = 0
+    n_segs = len(segments)
+    for w in words:
+        ws = float(w.get("start", 0.0))
+        # Advance to the segment whose end >= word_start.
+        while (seg_idx < n_segs
+               and ws > float(segments[seg_idx].get("end", 0.0))):
+            seg_idx += 1
+        if seg_idx >= n_segs:
+            break
+        if ws >= float(segments[seg_idx].get("start", 0.0)):
+            out[seg_idx].append(w)
+    return out
+
+
 def _record_obs_completion(obs_state, result: dict, started_monotonic: float) -> None:
     """At stream/non-stream done, fold the result-derived metrics
     (audio_sec, detected_language, rtf) into the request's observability
@@ -131,11 +163,14 @@ async def _stream_transcribe(
         `transcript.text.delta` per segment, then `transcript.text.done`.
 
       * `supports_streaming=False` — runs `module.transcribe` blockingly,
-        then emits a `warning` event explaining the downgrade, the full
-        text as a single `transcript.text.delta`, then
-        `transcript.text.done`. The warning is the first event so
-        aware clients can detect the downgrade before consuming any
-        delta.
+        then emits a `warning` event explaining the downgrade, followed
+        by one `transcript.text.delta` per segment in the inference
+        result (segment-by-segment, identical event shape to the real
+        streaming path), then `transcript.text.done`. All delta events
+        arrive in a burst after inference completes — that's the only
+        difference vs. real streaming. The warning is the first event
+        so aware clients can detect the downgrade before consuming
+        any delta.
 
     Errors are emitted as in-stream `error` events with the standard
     envelope shape (HTTP layer is already 200 SSE by the time we know
@@ -187,19 +222,50 @@ async def _stream_transcribe(
                 })
                 return
 
-            yield _sse_event({
-                "type": "transcript.text.delta",
-                "delta": result.get("text", ""),
-                "segment": {
-                    "start": 0.0,
-                    "end": float(result.get("duration", 0.0)),
-                    "words": result.get("words", []),
-                },
-            })
             _record_obs_completion(
                 obs_state, result,
                 obs_state.started_monotonic if obs_state else time.perf_counter(),
             )
+
+            # Drive the SSE stream from the result's native segments,
+            # emitting one delta per segment (mirrors real-streaming-path
+            # event shape). The previous implementation collapsed
+            # everything into a single delta with one synthetic
+            # 0..duration segment, which made downstream consumers see
+            # the entire audio as one giant cue — defeating both
+            # SRT-cue-sized and sentence-level granularities. The bug
+            # was masked while NeMo was returning empty segment_ts
+            # (single segment was the only thing we had to ship), but
+            # surfaced once subsampling chunking restored real native
+            # segment timestamps for long audio.
+            segments = result.get("segments") or []
+            words = result.get("words") or []
+            words_by_seg = _bucket_words_by_segment(words, segments)
+            if not segments:
+                # Defensive: if both NeMo and our word-synthesis fallback
+                # somehow returned no segments, fall back to a single
+                # delta covering the whole audio so the consumer at
+                # least gets the text.
+                yield _sse_event({
+                    "type": "transcript.text.delta",
+                    "delta": result.get("text", ""),
+                    "segment": {
+                        "start": 0.0,
+                        "end": float(result.get("duration", 0.0)),
+                        "words": words,
+                    },
+                })
+            else:
+                for idx, seg in enumerate(segments):
+                    yield _sse_event({
+                        "type": "transcript.text.delta",
+                        "delta": seg.get("text", ""),
+                        "segment": {
+                            "start": float(seg.get("start", 0.0)),
+                            "end": float(seg.get("end", 0.0)),
+                            "words": words_by_seg[idx],
+                        },
+                    })
             yield _sse_event({
                 "type": "transcript.text.done",
                 "language": result.get("language"),
