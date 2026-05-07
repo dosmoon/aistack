@@ -17,6 +17,7 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import StreamingResponse
 
 from aistack import _gpu_lock
+from aistack import observability as obs
 from aistack.tts import qwen3
 
 logger = logging.getLogger("aistack.api.tts")
@@ -62,6 +63,28 @@ async def proxy(path: str, request: Request) -> Response:
     upstream_path = f"/v1/audio/{path}"
     body = await request.body()
     fwd_headers = _filter_request_headers(dict(request.headers))
+
+    obs_state = obs.state_for(request)
+    if obs_state is not None:
+        obs_state.extra["upstream_path"] = upstream_path
+        obs_state.extra["request_bytes"] = len(body)
+        # Try to pull the requested voice/model from a JSON body for
+        # observability without disturbing the proxy bytes.
+        ct = request.headers.get("content-type", "").lower()
+        if "application/json" in ct and body:
+            try:
+                import json as _json
+                parsed = _json.loads(body)
+                if isinstance(parsed, dict):
+                    obs_state.model = parsed.get("model") or obs_state.model
+                    if "voice" in parsed:
+                        obs_state.extra["voice"] = parsed["voice"]
+            except Exception:
+                pass
+        if obs_state.capture is not None:
+            obs_state.capture.set_request_body(
+                body, content_type=request.headers.get("content-type")
+            )
 
     _gpu_lock.try_acquire_or_503("tts")
 

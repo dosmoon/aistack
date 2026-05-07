@@ -1,0 +1,55 @@
+{#
+  Three independent toggles + payload usage panel.
+  POSTs to /admin/api/observability/toggle return this same fragment so
+  HTMX replaces the panel in place after every click — no page reload.
+#}
+<div style="display:flex; flex-wrap:wrap; gap:1.5rem; align-items:center;">
+  {% for key in ["metrics", "access_log", "payload"] %}
+    <div>
+      <strong>{{ key }}</strong>
+      {% if toggles[key] %}
+        <span class="badge badge-llm">on</span>
+        <button hx-post="/admin/api/observability/toggle"
+                hx-vals='{"key":"{{ key }}","value":"off"}'
+                hx-target="#observability-card"
+                hx-swap="innerHTML"
+                style="margin-left:.4rem;">turn off</button>
+      {% else %}
+        <span class="badge badge-idle">off</span>
+        <button hx-post="/admin/api/observability/toggle"
+                hx-vals='{"key":"{{ key }}","value":"on"}'
+                hx-target="#observability-card"
+                hx-swap="innerHTML"
+                style="margin-left:.4rem;">turn on</button>
+      {% endif %}
+    </div>
+  {% endfor %}
+</div>
+
+<div style="margin-top:.9rem; font-size:0.85rem; color:#555;">
+  <p style="margin:.25rem 0;">
+    payload root: <code>{{ usage.root }}</code>
+  </p>
+  <p style="margin:.25rem 0;">
+    {{ "%.2f"|format(usage.bytes / 1048576) }} MB
+    / {{ "%.0f"|format(usage.max_bytes / 1073741824) }} GB
+    · {{ usage.count }} requests
+    {% if usage.earliest %}
+      · earliest {{ usage.earliest[:19] }}
+    {% endif %}
+    · age limit {{ usage.max_days }} d
+  </p>
+  <div class="meter" style="max-width:18rem;">
+    {% set pct = (usage.bytes / usage.max_bytes * 100) if usage.max_bytes else 0 %}
+    <span style="width: {{ pct if pct < 100 else 100 }}%;"></span>
+  </div>
+  <p style="margin:.5rem 0 0 0;">
+    <button hx-post="/admin/api/observability/clear-payload"
+            hx-confirm="Wipe all captured payloads?"
+            hx-target="#observability-card"
+            hx-swap="innerHTML">clear captured payloads</button>
+    <span class="empty" style="margin-left:.5rem;">
+      log dir: <code>{{ log_dir }}</code>
+    </span>
+  </p>
+</div>

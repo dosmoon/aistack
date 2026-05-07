@@ -1,0 +1,39 @@
+{% if not snap.categories %}
+  <p class="empty">No requests recorded yet — fire one and refresh.</p>
+{% else %}
+  <p class="empty" style="margin-top:0">
+    rolling window: {{ (snap.window_sec / 60) | int }} min · uptime: {{ (snap.uptime_sec / 60) | round(1) }} min
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>capability</th>
+        <th>total</th>
+        <th>err%</th>
+        <th>503-busy</th>
+        <th>p50 ms</th>
+        <th>p95 ms</th>
+        <th>p99 ms</th>
+        <th>max ms</th>
+        <th>rpm</th>
+        <th>wait p95</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for cat, m in snap.categories.items() %}
+        <tr>
+          <td><span class="badge badge-{{ cat }}">{{ cat }}</span></td>
+          <td>{{ m.total }}</td>
+          <td>{{ (m.error_rate * 100) | round(1) }}%</td>
+          <td>{{ m.slot_503 }}</td>
+          <td>{{ m.latency_ms.p50 }}</td>
+          <td>{{ m.latency_ms.p95 }}</td>
+          <td>{{ m.latency_ms.p99 }}</td>
+          <td>{{ m.latency_ms.max }}</td>
+          <td>{{ m.throughput_per_min }}</td>
+          <td>{{ m.slot_wait_ms.p95 }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endif %}

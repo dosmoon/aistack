@@ -29,6 +29,18 @@ if "%NEMO_CACHE_DIR%"=="" (
     set NEMO_CACHE_DIR=D:\AI_Models\nemo
 )
 
+REM Observability layer (D5). Three independent toggles, all default-on
+REM except payload capture (writes audio bytes to disk). Uncomment to
+REM override defaults at startup; admin UI also toggles them at runtime.
+REM   set AISTACK_OBS_METRICS=on
+REM   set AISTACK_OBS_ACCESS_LOG=on
+REM   set AISTACK_OBS_PAYLOAD=off
+REM   set AISTACK_OBS_PAYLOAD_DIR=D:\AI_Models\..\aistack_captures
+REM   set AISTACK_OBS_PAYLOAD_MAX_GB=5
+REM   set AISTACK_OBS_PAYLOAD_MAX_DAYS=7
+REM   set AISTACK_OBS_LOG_DIR=.\logs
+REM See docs/api/observability.md for the wire formats.
+
 cd /d "%REPO_ROOT%"
 "%PY%" -m uvicorn aistack.main:app --host 127.0.0.1 --port 11500 --reload
 endlocal

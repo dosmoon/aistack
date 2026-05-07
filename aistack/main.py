@@ -19,6 +19,9 @@ from aistack.api import asr as asr_api
 from aistack.api import llm as llm_api
 from aistack.api import tts as tts_api
 from aistack.backends.llm import ollama as llm_ollama
+from aistack.observability import config as obs_config
+from aistack.observability.middleware import ObservabilityMiddleware
+from aistack.observability.request_id import RequestIdMiddleware
 from aistack.tts import qwen3 as tts_qwen3
 
 
@@ -48,6 +51,23 @@ app = FastAPI(
     title="aistack",
     version=__version__,
     description="Localhost AI service for ASR and TTS (OpenAI-API-compatible).",
+)
+
+# Observability layer. ObservabilityMiddleware runs as pure ASGI so it
+# can tee streaming response bodies for payload capture without buffering
+# them. RequestIdMiddleware is added last so it sits on the outside and
+# the request_id is already on request.state by the time observability
+# starts timing. Toggles are independent — see aistack/observability/config.py.
+app.add_middleware(ObservabilityMiddleware)
+app.add_middleware(RequestIdMiddleware)
+
+_obs_toggles = obs_config.snapshot()
+_aistack_logger.info(
+    "observability: metrics=%s access_log=%s payload=%s (payload_dir=%s log_dir=%s)",
+    "on" if _obs_toggles["metrics"] else "off",
+    "on" if _obs_toggles["access_log"] else "off",
+    "on" if _obs_toggles["payload"] else "off",
+    obs_config.PAYLOAD_DIR, obs_config.LOG_DIR,
 )
 
 app.include_router(asr_api.router)

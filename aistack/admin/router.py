@@ -20,14 +20,17 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Form, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
 from aistack import _gpu_lock, _model_cache
 from aistack import asr as asr_pkg
 from aistack.admin import log_buffer
 from aistack.backends.llm import ollama as llm_ollama
+from aistack.observability import config as obs_config
+from aistack.observability import metrics as obs_metrics
+from aistack.observability import payload as obs_payload
 from aistack.tts import qwen3 as tts_qwen3
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -120,3 +123,58 @@ async def fragment_logs(request: Request, n: int = 200) -> HTMLResponse:
     return templates.TemplateResponse(
         request, "_logs.html", {"lines": log_buffer.tail(n)},
     )
+
+
+@router.get("/fragments/metrics", response_class=HTMLResponse)
+async def fragment_metrics(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request, "_metrics.html", {"snap": obs_metrics.snapshot()},
+    )
+
+
+def _observability_context() -> dict[str, Any]:
+    return {
+        "toggles": obs_config.snapshot(),
+        "usage": obs_payload.usage(),
+        "log_dir": str(obs_config.LOG_DIR),
+    }
+
+
+@router.get("/fragments/observability", response_class=HTMLResponse)
+async def fragment_observability(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request, "_observability.html", _observability_context(),
+    )
+
+
+@router.post("/api/observability/toggle", response_class=HTMLResponse)
+async def api_observability_toggle(
+    request: Request,
+    key: str = Form(...),
+    value: str = Form(...),
+) -> HTMLResponse:
+    """Flip one toggle. Returns the re-rendered observability fragment so
+    HTMX can swap it in without a separate fetch."""
+    enabled = value.strip().lower() in {"1", "on", "true", "yes", "y"}
+    try:
+        obs_config.set_enabled(key, enabled)
+    except ValueError as e:
+        return HTMLResponse(f'<p class="empty">error: {e}</p>', status_code=400)
+    return templates.TemplateResponse(
+        request, "_observability.html", _observability_context(),
+    )
+
+
+@router.post("/api/observability/clear-payload", response_class=HTMLResponse)
+async def api_observability_clear_payload(request: Request) -> HTMLResponse:
+    obs_payload.clear_all()
+    return templates.TemplateResponse(
+        request, "_observability.html", _observability_context(),
+    )
+
+
+@router.get("/api/metrics")
+async def api_metrics() -> JSONResponse:
+    """Machine-readable metrics snapshot. Same data the dashboard renders.
+    Stable JSON shape — see docs/api/observability.md for the schema."""
+    return JSONResponse(obs_metrics.snapshot())

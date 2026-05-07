@@ -96,6 +96,11 @@ selected model does not natively stream — see
 For a tour that combines all of these into a working integration,
 read [`integration.md`](integration.md).
 
+For the **performance & availability analysis** layer (built-in metrics,
+JSONL access logs, request/response capture, `X-Request-ID` propagation,
+`/admin/api/metrics` JSON endpoint), see
+[`observability.md`](observability.md).
+
 ## `GET /health`
 
 Liveness probe. Returns 200 with a small JSON body when the worker is

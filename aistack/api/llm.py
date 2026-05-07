@@ -33,6 +33,7 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from aistack import _gpu_lock, _model_cache
+from aistack import observability as obs
 from aistack.backends.llm import ollama as ollama_backend
 
 logger = logging.getLogger("aistack.api.llm")
@@ -60,8 +61,13 @@ def _evict_asr_for_llm() -> None:
 @router.post("/v1/chat/completions")
 async def chat_completions(request: Request) -> Response:
     """Forward an OpenAI-compatible chat-completion call to Ollama."""
+    obs_state = obs.state_for(request)
     try:
         body_bytes = await request.body()
+        if obs_state is not None and obs_state.capture is not None:
+            obs_state.capture.set_request_body(
+                body_bytes, content_type=request.headers.get("content-type")
+            )
         try:
             body = json.loads(body_bytes) if body_bytes else {}
         except json.JSONDecodeError:
@@ -111,6 +117,12 @@ async def chat_completions(request: Request) -> Response:
         ollama_backend.inject_keep_alive(body)
 
         streaming = bool(body.get("stream"))
+        if obs_state is not None:
+            obs_state.model = body.get("model")
+            obs_state.extra["stream"] = streaming
+            msgs = body.get("messages")
+            if isinstance(msgs, list):
+                obs_state.extra["message_count"] = len(msgs)
 
         client = ollama_backend.make_client()
         try:

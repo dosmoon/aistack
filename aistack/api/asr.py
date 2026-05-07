@@ -26,12 +26,14 @@ import logging
 import os
 import shutil
 import tempfile
+import time
 from typing import AsyncIterator, Tuple
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from aistack import _gpu_lock
+from aistack import observability as obs
 from aistack.asr import _SUPPORTS_STREAMING, faster_whisper as _fw
 from aistack.asr import installed_providers
 from aistack.asr import parakeet as _pk
@@ -406,6 +408,19 @@ async def transcribe(
         with open(audio_path, "wb") as fh:
             shutil.copyfileobj(file.file, fh)
 
+        # Observability hooks: capture model id + the uploaded audio
+        # (when payload toggle is on). Doing it here means failed
+        # provider selection still records the audio that triggered
+        # the failure, which is what the operator wants for repro.
+        obs_state = obs.state_for(request)
+        if obs_state is not None:
+            obs_state.extra["request_audio_bytes"] = os.path.getsize(audio_path)
+            obs_state.extra["language"] = language
+            obs_state.extra["stream"] = stream
+            obs_state.extra["response_format"] = response_format
+            if obs_state.capture is not None:
+                obs_state.capture.adopt_request_file(audio_path)
+
         try:
             module, kwargs = _select_provider(model, language)
         except AIError as e:
@@ -425,6 +440,9 @@ async def transcribe(
             provider_id = _MODULE_TO_PROVIDER_ID[module]
             supports = _SUPPORTS_STREAMING[provider_id]
             canonical_id = kwargs.get("model_name") or model or "auto"
+            if obs_state is not None:
+                obs_state.model = canonical_id
+                obs_state.extra["provider"] = provider_id
             return StreamingResponse(
                 _stream_transcribe(
                     module=module,
@@ -451,6 +469,9 @@ async def transcribe(
         watcher = asyncio.create_task(_watch_disconnect(request, cancel_token))
         try:
             with _gpu_lock.busy_or_503("asr"):
+                if obs_state is not None:
+                    obs_state.model = kwargs.get("model_name") or obs_state.model
+                    obs_state.extra["provider"] = _MODULE_TO_PROVIDER_ID[module]
                 try:
                     result = await asyncio.to_thread(
                         module.transcribe,
@@ -486,6 +507,14 @@ async def transcribe(
                 await watcher
             except (asyncio.CancelledError, Exception):
                 pass
+
+        if obs_state is not None and isinstance(result, dict):
+            duration = float(result.get("duration", 0.0))
+            elapsed_ms = (time.perf_counter() - obs_state.started_monotonic) * 1000.0
+            obs_state.extra["audio_sec"] = round(duration, 3)
+            obs_state.extra["detected_language"] = result.get("language")
+            if duration > 0 and elapsed_ms > 0:
+                obs_state.extra["rtf"] = round((elapsed_ms / 1000.0) / duration, 4)
 
         payload = _to_openai_response(result, response_format)
         if response_format == "text":

@@ -77,6 +77,23 @@
     </div>
 
     <div class="card full">
+      <h2>Performance metrics
+        <span style="font-size:0.78rem; color:#888; font-weight:400;">(rolling window)</span>
+      </h2>
+      <div hx-get="/admin/fragments/metrics"
+           hx-trigger="load, every 5s"
+           hx-swap="innerHTML">loading…</div>
+    </div>
+
+    <div class="card full">
+      <h2>Observability toggles</h2>
+      <div id="observability-card"
+           hx-get="/admin/fragments/observability"
+           hx-trigger="load"
+           hx-swap="innerHTML">loading…</div>
+    </div>
+
+    <div class="card full">
       <h2>Recent logs</h2>
       <div hx-get="/admin/fragments/logs"
            hx-trigger="load, every 2s"
@@ -86,6 +103,7 @@
 
   <div class="footer">
     aistack · read-only dashboard · install/uninstall not yet wired
+    · metrics JSON: <a href="/admin/api/metrics">/admin/api/metrics</a>
   </div>
 </body>
 </html>
