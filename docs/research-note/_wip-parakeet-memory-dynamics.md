@@ -101,15 +101,34 @@ audio_sec=1501.63 (25 min), 同一 mp3
 - 纯冷启动 → 最差（含模型加载 25-30s）
 - alloc_peak 始终在 12 GB ± 5%，**与 pool 状态无关**——这才是 25min 的真实工作集
 
-## 待做的实验（pending empty_cache 开关）
+## 待做的实验（pending empty_cache 开关）—— **CANCELLED**
 
-加 `AISTACK_PARAKEET_CLEAR_CACHE_BETWEEN=1` 之后重跑，验证假设：
+加 `AISTACK_PARAKEET_CLEAR_CACHE_BETWEEN=1` 后实测**第二个请求挂死**：
 
-1. **50min → 25min**（pool 碎片化场景）：清缓存后 wall 从 20s 降到 ~15s？（接近 12min 预热的最优）
-2. **50min → 50min**（同形状最优场景）：清缓存后 wall 从 69s 升到 ~120s？（失去复用红利）
-3. **冷 → 25min**（无残留场景）：清缓存影响极小（pool 本来就空）
+```
+21:46:02 rid=3a319d9b6318960e   ← cold start，正常完成 52s
+[第二次请求 rid=9b52556b...]   ← 完全没进 JSONL（observability finally 没跑）
+[第三次请求]                    ← 同样 hang
+```
 
-如果 1 改善 + 2 退化 + 3 不变 → 假设成立。否则机制还要重新理解。
+第二次开始的请求挂在 `asyncio.to_thread(module.transcribe, ...)` 内部，CUDA 调用永远不返回。GPU 锁永远不释放。整个 ASR 端点不可用直到 kill 进程。
+
+**机制猜测**（未严格验证，但和现象吻合）：
+
+- Windows WDDM 把 torch reserved pool 的一部分放在 shared system memory 区域（PCIe 路径）
+- `torch.cuda.empty_cache()` 释放这部分时让 Windows decommit 这块共享区
+- 下一次大量 alloc 时需要重新 commit + 重铺
+- 这个 commit/decommit 循环在 WDDM 驱动层有竞态/死锁
+
+Linux 上 `empty_cache()` 不需要走这条路，可能没事——但 aistack 部署目标就是消费级 Windows 桌面，**这条路对我们的部署面没用**。
+
+**已撤销**：`AISTACK_PARAKEET_CLEAR_CACHE_BETWEEN` env flag + `dev-clearcache.bat` launcher 都已 revert（commit 后续）。`_reset_gpu_peak()` 退回到只 reset peak stats。
+
+**下一步候选方向**（不用 empty_cache）：
+
+- **A. Smart warm-up**：服务启动时主动跑一段干净的 dummy audio（比如 10min 的预录静音）让 pool 长到稳定形状。代价：启动多 10-15 秒。收益：首次真实请求避开冷启动。
+- **B. 显式控制 cuDNN benchmark**：`torch.backends.cudnn.benchmark = False`（禁止算法选择缓存）vs `True`（启用）。可能让 pool 形状更可预测，代价是单次推理略慢。
+- **C. 接受现实**：消费 Windows GPU 的内存动力学就是这样。aistack 的产品决策是"warm steady state 快、混合工作量首请求慢"，**写进文档**让用户理解，不再尝试自动修。
 
 ## 数据落盘归档
 

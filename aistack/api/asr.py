@@ -120,30 +120,27 @@ def _bucket_words_by_segment(words: list, segments: list) -> list[list]:
     return out
 
 
-_CLEAR_CACHE_BETWEEN = os.environ.get(
-    "AISTACK_PARAKEET_CLEAR_CACHE_BETWEEN", ""
-).strip().lower() in ("1", "on", "true", "yes", "y")
-
-
 def _reset_gpu_peak() -> None:
     """Clear PyTorch's per-process peak memory counter so the next
     request gets a clean snapshot. Best-effort — silent no-op if
     torch / CUDA unavailable.
 
-    If AISTACK_PARAKEET_CLEAR_CACHE_BETWEEN is on, also calls
-    `torch.cuda.empty_cache()` to release torch's reserved-but-unused
-    memory pool back to CUDA. This trades cache-reuse benefit for a
-    clean per-request memory layout — the 2026-05-07 experiments
-    showed a 4x wall-time spread on the same audio depending on
-    pool fragmentation history. Defaults OFF; flip on to test
-    whether clearing improves the worst-case (size-mismatch) path
-    without crippling the best-case (size-matched warm cache) path.
+    Earlier this function was given an optional `torch.cuda.empty_cache()`
+    call gated by AISTACK_PARAKEET_CLEAR_CACHE_BETWEEN, intended to clean
+    pool fragmentation between requests. Live testing (2026-05-07,
+    Win11 + RTX 4060L 8 GB + 31 GB Windows shared GPU memory) showed
+    that empty_cache() between consecutive Parakeet requests reliably
+    HANGS the second request inside the worker thread's CUDA call —
+    no exception, no timeout, just deadlock. The GPU lock never
+    releases and the entire ASR endpoint becomes unresponsive until
+    the process is killed. Suspected root cause is a Windows WDDM
+    decommit / re-commit race on the shared-memory portion of the
+    reserved pool. The flag and helper bat were removed in the same
+    commit that simplified this function back to peak-stats reset only.
     """
     try:
         import torch  # type: ignore
         if torch.cuda.is_available():
-            if _CLEAR_CACHE_BETWEEN:
-                torch.cuda.empty_cache()
             torch.cuda.reset_peak_memory_stats()
     except Exception:
         pass
