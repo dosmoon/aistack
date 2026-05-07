@@ -572,6 +572,8 @@ release cycle so consumers can migrate without coupled deploys.
 | Build a TTS client | [`tts.md`](tts.md) |
 | Build an LLM client | [`llm.md`](llm.md) |
 | Branch on errors precisely | [`errors.md`](errors.md) |
+| Stitch your trace IDs through aistack (optional `X-Request-ID`) | [`observability.md`](observability.md#optional-send-x-request-id-for-cross-system-log-correlation) |
+| Read the metrics / access log / payload capture aistack records about your traffic | [`observability.md`](observability.md) |
 | Understand aistack's internal architecture (not needed for integration) | `docs/design/architecture.md` |
 
 If something behaves differently from what this guide promises, the

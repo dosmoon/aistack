@@ -29,15 +29,73 @@ the env-driven defaults.
 | `AISTACK_OBS_PAYLOAD_RESP_MAX_MB` | `50` | per-request response body cap; over → meta records `resp_truncated:true` |
 | `AISTACK_OBS_METRICS_WINDOW_MIN` | `60` | rolling window for percentiles |
 
-## Request IDs
+## Consumer integration — what changes for clients?
 
-Every request is tagged with `X-Request-ID`:
+**Nothing is required.** Every observability feature is server-side and
+fully backward compatible:
 
-* If the client sends the header, aistack passes it through (so
-  upstream callers like VideoCraft can stitch their own trace IDs).
-* Otherwise aistack generates a 16-char hex id.
-* The id is echoed back in the response header, written to access log,
-  embedded in payload directory names, and attached to metrics samples.
+* `/v1/audio/transcriptions`, `/v1/chat/completions`, `/v1/audio/speech`
+  request and response shapes are unchanged.
+* No new required headers. No new required fields. Existing clients
+  (CLI scripts, VideoCraft, OpenAI-shape SDKs) work unmodified and
+  start showing up in metrics / access logs immediately.
+* Metrics + access log are on by default; payload capture is off by
+  default. Toggling any of them via `/admin` or env vars never changes
+  the wire contract.
+
+The **one optional enhancement** for clients that want trace stitching:
+
+### Optional: send `X-Request-ID` for cross-system log correlation
+
+If the caller has its own job id (a VideoCraft pipeline step, an agent
+task id, a user-facing request id), pass it as the `X-Request-ID`
+header. aistack will:
+
+1. use it as the `request_id` field in `logs/access-YYYY-MM-DD.jsonl`
+2. use it as the directory name when payload capture is on
+   (`<PAYLOAD_DIR>/<date>/<X-Request-ID>/`)
+3. attach it to in-memory metrics samples (visible under `recent` in
+   `/admin/api/metrics`)
+4. echo it back in the response header
+
+```python
+import httpx
+
+trace_id = f"videocraft-{pipeline_id}-step-{step_idx}"
+resp = httpx.post(
+    "http://127.0.0.1:11500/v1/audio/transcriptions",
+    headers={"X-Request-ID": trace_id},
+    files={"file": open("clip.mp3", "rb")},
+    data={"model": "auto", "language": "en"},
+)
+# Echoed back, even if you didn't send one (aistack generates 16-hex):
+returned_id = resp.headers["X-Request-ID"]
+```
+
+**Format constraints** when sending your own id:
+
+* ASCII letters, digits, and `-_:.` — anything else is rejected and
+  aistack generates a 16-hex id instead
+* max 128 chars — over-length values are also rejected
+* uniqueness is the caller's responsibility (we do not deduplicate)
+
+**Not sending one is fine.** aistack generates a 16-hex id (e.g.
+`825e53134e178cd1`) and returns it in the response header — clients
+that just want to log "the id aistack assigned" only need to read
+the response header, no request-side change.
+
+### When stitching pays off
+
+Skip it if:
+* one process talks to aistack and never correlates across systems
+* requests are inherently distinguishable by timestamp + endpoint
+
+Add it when:
+* a long pipeline (transcribe → LLM → TTS) needs end-to-end debugging
+* slow/failing requests need to be traced from VideoCraft's logs into
+  aistack's access log + payload dir without timestamp guessing
+* multiple clients share one aistack instance and you need to
+  attribute traffic
 
 ## /admin/api/metrics — JSON shape
 
