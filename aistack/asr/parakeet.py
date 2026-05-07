@@ -354,9 +354,101 @@ def _normalize_hypothesis(hyp) -> tuple[str, list, list]:
             "word":  (w.get("word") or "").strip(),
         })
 
-    # Fallback: if model returned text but no segment timestamps, emit one
-    # whole-clip segment so SRT generation still works.
+    # Fallback: NeMo sometimes returns word-level timestamps but no
+    # segment-level ones — observed on long-form audio under local
+    # attention. Without segments, downstream SRT generation collapses
+    # the entire transcription into one giant cue, which is unusable for
+    # anything past ~10 s of speech. Synthesize segments from the word
+    # timestamps so SRT / segment-by-segment consumers stay functional.
+    if not segments_out and words_out:
+        segments_out = _segments_from_words(words_out)
+    # Last-resort fallback: text but no timestamps at all (some old
+    # NeMo paths). Single-segment is wrong but better than dropping.
     if text and not segments_out:
         segments_out.append({"id": 0, "start": 0.0, "end": 0.0, "text": text})
 
     return text, segments_out, words_out
+
+
+# ── Segment synthesis from word timestamps ───────────────────────────────────
+
+# Tunables for the word→segment regrouping. These match conventional
+# subtitle pacing (≤ ~5 s per cue, break at sentence boundaries) and
+# are deliberately conservative — better to over-split than to glue
+# unrelated sentences into a single cue.
+_SEGMENT_MAX_DURATION_SEC = 5.0
+_SEGMENT_MIN_DURATION_SEC = 0.4
+_SEGMENT_SILENCE_GAP_SEC = 0.6
+_SEGMENT_SENTENCE_ENDERS = (".", "!", "?", "。", "！", "？")
+
+
+def _segments_from_words(words: list[dict]) -> list[dict]:
+    """Group word-level timestamps into subtitle-friendly segments.
+
+    Break rules (any one closes the current segment):
+      - silence gap > _SEGMENT_SILENCE_GAP_SEC between successive words
+      - current segment duration ≥ _SEGMENT_MAX_DURATION_SEC AND the
+        last word ends with a sentence-final punctuation mark
+      - duration would exceed 1.5× _SEGMENT_MAX_DURATION_SEC even
+        without punctuation (long monotone speech)
+
+    Words shorter than _SEGMENT_MIN_DURATION_SEC don't trigger a flush
+    on their own — that prevents single-syllable utterances from
+    creating tiny segments that flicker on screen.
+    """
+    if not words:
+        return []
+
+    segments: list[dict] = []
+    cur_words: list[dict] = []
+    cur_start: float = 0.0
+    cur_end: float = 0.0
+
+    def flush() -> None:
+        if not cur_words:
+            return
+        text = " ".join(w["word"] for w in cur_words if w.get("word")).strip()
+        segments.append({
+            "id": len(segments),
+            "start": cur_start,
+            "end": cur_end,
+            "text": text,
+        })
+
+    hard_max = _SEGMENT_MAX_DURATION_SEC * 1.5
+
+    for w in words:
+        ws = float(w.get("start", 0.0))
+        we = float(w.get("end", ws))
+        wt = (w.get("word") or "").strip()
+        if not wt:
+            continue
+
+        if not cur_words:
+            cur_start = ws
+            cur_end = we
+            cur_words = [w]
+            continue
+
+        gap = ws - cur_end
+        cur_dur = cur_end - cur_start
+        prev_text = (cur_words[-1].get("word") or "").rstrip()
+        prev_ends_sentence = prev_text.endswith(_SEGMENT_SENTENCE_ENDERS)
+
+        should_flush = (
+            gap > _SEGMENT_SILENCE_GAP_SEC
+            or (cur_dur >= _SEGMENT_MAX_DURATION_SEC and prev_ends_sentence)
+            or cur_dur >= hard_max
+        )
+        if should_flush and cur_dur >= _SEGMENT_MIN_DURATION_SEC:
+            flush()
+            cur_words = [w]
+            cur_start = ws
+            cur_end = we
+            continue
+
+        cur_words.append(w)
+        cur_end = we
+
+    flush()
+    return segments
