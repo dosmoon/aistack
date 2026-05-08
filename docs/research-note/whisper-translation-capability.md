@@ -75,7 +75,9 @@ Whisper 的 transcribe API 接受一个 `task` 字段，OpenAI 文档列出两�
 
 ## Open questions（待实测）
 
-1. **方案 A 的实操质量**：用 Whisper-large-v3 + qwen2.5:14b 跑一段 17 分钟英文演讲，跟 frontier LLM（Claude / GPT-4 级别）直接做语音→中文文本的输出做盲对比，能拉开多大差距？本地全离线方案离闭源天花板的距离是产品决策关键数据。**不与 DeepL 等专业 NMT 工具对比**——既有经验已确认现代 LLM 翻译质量整体优于 DeepL，没有研究价值
+1. **方案 A 的实操质量**：用 Whisper-large-v3 + qwen2.5:14b 跑一段 17 分钟英文演讲，跟 frontier LLM（Claude / GPT-4 级别）直接做语音→中文文本的输出做盲对比，能拉开多大差距？本地全离线方案离闭源天花板的距离是产品决策关键数据。
+
+   **不与 DeepL / NLLB / 传统 NMT 工具对比**——dosmoon 关心的内容（新闻、政治、经济、评论类播客）是 knowledge-heavy 内容，DeepL 的优势在专业窄域词汇（法律/医学/技术手册），它**没有世界知识体系**，处理需要 ground 到实体、事件、地缘语境的内容时会输出"字对字正确但读起来像机器"的结果。这条赛道 LLM 已经赢了，再去比没有研究价值。仅当未来出现窄域专业翻译需求（如法律文书）才值得回头评估 NMT。
 2. **方案 B 的长音频稳定性**：SeamlessM4T 官方 demo 都是 < 30 秒片段，长音频要不要分段？分段策略与 Whisper 一致还是另立？
 3. **方案 C 的 prompt 控制力**：能不能通过 prompt 让 Qwen2-Audio 输出"贴原文"或"贴本地化"两种风格？这是产品差异化的可能旋钮
 4. **Whisper 的"伪 EN→ZH"**：是否存在社区 fine-tuned 的 Whisper 变体能直接做 EN→ZH？（已知有少量尝试如 whisper-large-v2-cn-translate，但训练数据规模与质量不明）
