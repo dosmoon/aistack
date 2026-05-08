@@ -1,3 +1,10 @@
+---
+title: POST /v1/audio/transcriptions
+description: Speech-to-text endpoint. OpenAI Whisper API compatible. Supports faster-whisper, NVIDIA Parakeet, Alibaba SenseVoice, and language-aware auto routing.
+sidebar:
+  order: 3
+---
+
 # `POST /v1/audio/transcriptions`
 
 Transcribes an audio file. OpenAI Whisper API compatible — clients

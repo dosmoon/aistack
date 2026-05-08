@@ -1,3 +1,10 @@
+---
+title: Observability
+description: Built-in performance and availability layer — rolling p50/p95/p99, JSONL access log, per-request payload capture, X-Request-ID correlation.
+sidebar:
+  order: 7
+---
+
 # Observability — performance & availability analysis
 
 aistack ships a built-in observability layer for **performance analysis**

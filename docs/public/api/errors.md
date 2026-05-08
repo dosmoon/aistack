@@ -1,3 +1,10 @@
+---
+title: Error envelope
+description: Common JSON error envelope shared by every aistack endpoint. Branch on error.kind, surface error.message.
+sidebar:
+  order: 6
+---
+
 # Error envelope
 
 All non-2xx responses from aistack use a single JSON envelope. Consumers

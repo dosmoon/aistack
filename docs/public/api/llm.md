@@ -1,3 +1,10 @@
+---
+title: POST /v1/chat/completions
+description: Chat completion endpoint. OpenAI compatible. Reverse-proxied to a local Ollama daemon with GPU scheduling and a sensible keep_alive default.
+sidebar:
+  order: 5
+---
+
 # `POST /v1/chat/completions`
 
 OpenAI-compatible chat completion endpoint. aistack reverse-proxies the

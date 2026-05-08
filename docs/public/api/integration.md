@@ -1,3 +1,10 @@
+---
+title: Integration Guide
+description: How to integrate aistack from a client — capability discovery, requests, errors, streaming, and the full consumer journey.
+sidebar:
+  order: 1
+---
+
 # aistack Integration Guide
 
 > **This document is the contract aistack publishes to consumers.** It
@@ -574,7 +581,7 @@ release cycle so consumers can migrate without coupled deploys.
 | Branch on errors precisely | [`errors.md`](errors.md) |
 | Stitch your trace IDs through aistack (optional `X-Request-ID`) | [`observability.md`](observability.md#optional-send-x-request-id-for-cross-system-log-correlation) |
 | Read the metrics / access log / payload capture aistack records about your traffic | [`observability.md`](observability.md) |
-| Understand aistack's internal architecture (not needed for integration) | `docs/design/architecture.md` |
+| Understand aistack's internal architecture (not needed for integration) | aistack repo's `docs/design/architecture.md` (internal-only) |
 
 If something behaves differently from what this guide promises, the
 guide is the authority — please file an issue against

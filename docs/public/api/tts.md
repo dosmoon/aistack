@@ -1,3 +1,10 @@
+---
+title: POST /v1/audio/speech
+description: Text-to-speech endpoint. OpenAI TTS API compatible. Proxies to the Qwen3-TTS model running in a local Docker container.
+sidebar:
+  order: 4
+---
+
 # `POST /v1/audio/speech`
 
 Generates speech audio from text. OpenAI TTS API compatible at the

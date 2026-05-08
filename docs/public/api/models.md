@@ -1,3 +1,10 @@
+---
+title: GET /v1/models
+description: List models the gateway can serve right now, with capabilities, languages, streaming support, and routing aliases.
+sidebar:
+  order: 2
+---
+
 # `GET /v1/models`
 
 Lists every model that is currently servable by aistack — across all

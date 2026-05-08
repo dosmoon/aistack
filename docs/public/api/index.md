@@ -1,15 +1,21 @@
+---
+title: HTTP API
+description: aistack's HTTP contract — ASR, TTS, LLM proxy, models inventory, errors, and observability.
+sidebar:
+  order: 0
+---
+
 # aistack HTTP API
 
-This directory **is the contract aistack publishes to consumers**. Any
+This section **is the contract aistack publishes to consumers**. Any
 client — CLI tools, GUI applications like VideoCraft, agent frameworks,
 future dosmoon products — integrates against what is documented here.
 aistack does not adapt to any particular consumer; consumers conform
 to this contract.
 
 Internal implementation choices (which inference engine, where the GPU
-lives, how scheduling works) are documented under `docs/design/` and
-`docs/selection/` and are **not** part of the contract — they may
-change without API version bumps.
+lives, how scheduling works) are **not** part of the contract — they
+may change without API version bumps.
 
 ## Where to start
 
@@ -87,7 +93,7 @@ selected model does not natively stream — see
 
 | Endpoint | Method | Doc |
 |---|---|---|
-| `/health` | GET | (this README — see below) |
+| `/health` | GET | (this page — see below) |
 | `/v1/models` | GET | [models.md](models.md) |
 | `/v1/audio/transcriptions` | POST | [asr.md](asr.md) |
 | `/v1/audio/speech` | POST | [tts.md](tts.md) |
