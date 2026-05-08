@@ -25,6 +25,19 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+      # The Astro site's prebuild hook (site/scripts/sync-docs.mjs)
+      # runs scripts/gen_api_reference.py and scripts/gen_config_reference.py
+      # to refresh docs/public/{api/reference,reference/configuration.md}
+      # from the live FastAPI app's OpenAPI spec and aistack/config.py
+      # AST. They need Python with aistack's base deps importable; the
+      # base deps are tiny (fastapi/pydantic/starlette/jinja2/httpx) and
+      # all ASR/TTS/LLM heavy imports inside aistack are lazy, so this
+      # step stays under ~30 s.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install aistack base for doc generators
+        run: pip install -e .
       - uses: withastro/action@v6
         with:
           path: ./site

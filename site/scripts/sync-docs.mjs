@@ -51,12 +51,14 @@ async function copyTree(src, dest) {
 
 function runOneGenerator(script) {
   // Try a sequence of Python interpreters; first one that runs (exit
-  // 0) wins. If all fail (no Python on PATH, missing aistack venv,
-  // etc.), warn and continue — the markdown checked into the repo at
-  // docs/public/<...>/ is the fallback.
+  // 0) wins. Failure is fatal — auto-generated docs are not committed
+  // to the repo, so the only way they reach the published site is via
+  // these generators running successfully. CI installs Python +
+  // aistack base before invoking astro build; local dev needs an
+  // active venv with `pip install -e .` done. AISTACK_SKIP_API_GEN=1
+  // is the explicit escape hatch for offline / quick-iter work.
   if (!existsSync(script)) {
-    console.warn(`[sync-docs] generator missing: ${script} — skipping`);
-    return;
+    throw new Error(`[sync-docs] generator missing: ${script}`);
   }
   const candidates = process.env.AISTACK_PYTHON
     ? [process.env.AISTACK_PYTHON]
@@ -68,10 +70,14 @@ function runOneGenerator(script) {
     });
     if (result.error && result.error.code === 'ENOENT') continue;
     if (result.status === 0) return;
-    console.warn(`[sync-docs] ${exe} ${script} exited with status ${result.status}`);
-    return;
+    throw new Error(`[sync-docs] ${exe} ${script} exited with status ${result.status}`);
   }
-  console.warn(`[sync-docs] could not locate a Python interpreter for ${script}`);
+  throw new Error(
+    `[sync-docs] no Python interpreter found for ${script} ` +
+    '(tried AISTACK_PYTHON, python, python3, py). ' +
+    'Install Python and run `pip install -e .` in the repo root, ' +
+    'or set AISTACK_SKIP_API_GEN=1 to bypass (auto-generated reference will be missing).'
+  );
 }
 
 function runGenerator() {
