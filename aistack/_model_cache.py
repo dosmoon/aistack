@@ -11,9 +11,8 @@ entries that haven't been used for KEEP_ALIVE_SEC. On eviction we trigger
 gc.collect() and torch.cuda.empty_cache() so RAM/VRAM is actually freed
 rather than waiting for Python's reference counting to catch up.
 
-Configuration via env vars (set before service start):
-    AISTACK_MODEL_KEEP_ALIVE_SEC   default 300  (5 min)
-    AISTACK_MODEL_SCAN_INTERVAL_SEC default 60  (1 min)
+Configuration: see `aistack.config.config.model_cache`. Knobs are
+documented in docs/configuration.md.
 
 The eviction thread is started lazily on first put().
 """
@@ -22,15 +21,16 @@ from __future__ import annotations
 
 import gc
 import logging
-import os
 import threading
 import time
 from typing import Any
 
+from aistack.config import config
+
 logger = logging.getLogger("aistack.cache")
 
-KEEP_ALIVE_SEC = float(os.environ.get("AISTACK_MODEL_KEEP_ALIVE_SEC", "300"))
-SCAN_INTERVAL_SEC = float(os.environ.get("AISTACK_MODEL_SCAN_INTERVAL_SEC", "60"))
+KEEP_ALIVE_SEC = config.model_cache.keep_alive_sec
+SCAN_INTERVAL_SEC = config.model_cache.scan_interval_sec
 
 # {(provider, key) -> {"model": obj, "last_used": monotonic_seconds}}
 _CACHE: dict[tuple, dict] = {}

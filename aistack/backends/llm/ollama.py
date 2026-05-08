@@ -14,21 +14,22 @@ Ollama remains the actual LLM runtime — aistack adds:
     chat completion. This minimizes contention with subsequent ASR
     calls. Clients that want different lifetime override explicitly.
 
-Configuration via env var:
-    AISTACK_OLLAMA_URL   default http://127.0.0.1:11434
+Configuration: see `aistack.config.config.backends.ollama_url`,
+documented in docs/configuration.md.
 """
 
 from __future__ import annotations
 
-import os
 import logging
 from typing import AsyncIterator
 
 import httpx
 
+from aistack.config import config
+
 logger = logging.getLogger("aistack.backends.llm.ollama")
 
-UPSTREAM = os.environ.get("AISTACK_OLLAMA_URL", "http://127.0.0.1:11434")
+UPSTREAM = config.backends.ollama_url
 
 # Default keep_alive injected when the client omits it. Short enough that
 # a downstream ASR call within a few minutes does not race with a

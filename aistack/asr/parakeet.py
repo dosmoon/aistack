@@ -24,6 +24,7 @@ from typing import Callable
 
 from aistack import _model_cache
 from aistack.asr._chunking import plan_chunks, shift_words, stitch_words
+from aistack.config import config
 from aistack.errors import AIError, Kind
 
 logger = logging.getLogger("aistack.asr.parakeet")
@@ -51,9 +52,11 @@ EventCallback = Callable[..., None]
 # bigger cards. att_context_size is also configurable; 256 frames on each
 # side at the model's 80 ms-per-frame rate is ~20 s of context, which is
 # what NVIDIA's HuggingFace model card recommends.
-_ATTENTION_MODE = os.environ.get("AISTACK_PARAKEET_ATTENTION_MODE", "local").lower()
-_ATT_CONTEXT_SIZE = os.environ.get("AISTACK_PARAKEET_ATT_CONTEXT_SIZE", "256,256")
-
+# Configuration is centralized in aistack.config.config.parakeet
+# (see docs/configuration.md). Local aliases keep the rest of this
+# module compact and let test code monkey-patch a single binding.
+_ATTENTION_MODE = config.parakeet.attention_mode
+_ATT_CONTEXT_SIZE = config.parakeet.att_context_size
 
 # Long-audio chunking. Long inputs degrade Parakeet's memory profile
 # (cuDNN workspace caching + caching-allocator interactions push VRAM
@@ -62,21 +65,12 @@ _ATT_CONTEXT_SIZE = os.environ.get("AISTACK_PARAKEET_ATT_CONTEXT_SIZE", "256,256
 # stable short-input regime; we stitch results via word-LCS in the
 # overlap zone so segments aren't sliced mid-clause.
 #
-# Overlap defaults to 120 s based on bench/run_experiments sweep on
-# 25-min and 50-min audio: 60 s and 120 s have identical VRAM, but
-# 120 s gives a higher overall recall (98.1% vs 97.3% on 25 min) and
-# also keeps tail-merge from inflating the last chunk past 12 min on
-# 25-min inputs (60 s → 14 min last chunk; 120 s → three even chunks).
-# Pushing further to 180 s starts breaking the safe-window invariant
-# on 50-min audio (last chunk merges to 13.8 min), regressing recall
-# and pushing reserved VRAM to 13 GB.
-#
-# Defaults are conservative — turn off via AISTACK_PARAKEET_CHUNK_DISABLE=1
-# to feed audio whole (e.g., on big GPUs that don't need it).
-_CHUNK_DISABLE = os.environ.get("AISTACK_PARAKEET_CHUNK_DISABLE", "0") == "1"
-_CHUNK_WINDOW_SEC = float(os.environ.get("AISTACK_PARAKEET_CHUNK_WINDOW_SEC", "720"))
-_CHUNK_OVERLAP_SEC = float(os.environ.get("AISTACK_PARAKEET_CHUNK_OVERLAP_SEC", "120"))
-_CHUNK_MIN_LAST_SEC = float(os.environ.get("AISTACK_PARAKEET_CHUNK_MIN_LAST_SEC", "300"))
+# Overlap=120s comes from a bench/run_experiments sweep — see
+# docs/configuration.md and bench/run_experiments.py for the data.
+_CHUNK_DISABLE = config.parakeet.chunk_disable
+_CHUNK_WINDOW_SEC = config.parakeet.chunk_window_sec
+_CHUNK_OVERLAP_SEC = config.parakeet.chunk_overlap_sec
+_CHUNK_MIN_LAST_SEC = config.parakeet.chunk_min_last_sec
 
 
 # Parakeet TDT v3 supports these 25 languages (plus English) — used by the

@@ -12,11 +12,11 @@ Future work (not D2):
 
 from __future__ import annotations
 
-import os
-
 import httpx
 
-UPSTREAM = os.environ.get("AISTACK_QWEN3_TTS_UPSTREAM", "http://127.0.0.1:17860")
+from aistack.config import config
+
+UPSTREAM = config.backends.qwen3_tts_upstream
 MODEL_ID = "qwen3-tts-12hz-0.6b-customvoice"
 
 # Long timeout: first request after container start triggers torch.compile,
