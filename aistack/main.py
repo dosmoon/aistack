@@ -18,6 +18,7 @@ from aistack.admin import router as admin_router
 from aistack.api import asr as asr_api
 from aistack.api import llm as llm_api
 from aistack.api import tts as tts_api
+from aistack.api._schemas import HealthResponse, ModelsList
 from aistack.backends.llm import ollama as llm_ollama
 from aistack.observability import config as obs_config
 from aistack.observability.middleware import ObservabilityMiddleware
@@ -108,26 +109,56 @@ async def _envelope_aware_http_exception_handler(
     )
 
 
-@app.get("/health")
+@app.get(
+    "/health",
+    summary="Liveness probe",
+    response_model=HealthResponse,
+)
 def health() -> dict:
+    """Returns 200 with a small JSON body when the worker is ready.
+
+    Connection refused or non-200 means aistack is down or still
+    starting; consumers should surface "service unreachable" with a
+    hint to start the dev server. This endpoint never blocks on
+    backend health — it only confirms the FastAPI worker itself is
+    alive.
+    """
     return {"status": "ok", "version": __version__}
 
 
-@app.get("/v1/models")
+@app.get(
+    "/v1/models",
+    summary="List servable models",
+    response_model=ModelsList,
+    responses={
+        200: {
+            "description": (
+                "Inventory of every model the gateway can serve right now, "
+                "across ASR / TTS / LLM, plus the 'auto' routing alias when "
+                "at least one ASR backend is reachable."
+            ),
+        },
+    },
+)
 async def list_models() -> dict:
     """OpenAI-compatible model list. Lists only backends that will actually
     serve a request right now:
 
       - ASR entries are emitted for every provider whose ML library is
-        importable (pure import probe, no model load).
-      - TTS entry is emitted only if the Qwen3-TTS upstream container
-        responds to /health.
-      - LLM entries are aggregated from Ollama (`/api/tags`) when the
+        importable in the running venv (pure import probe — no model
+        weights are loaded).
+      - The TTS entry is emitted only if the Qwen3-TTS upstream
+        container responds to its `/health` probe.
+      - LLM entries are aggregated from Ollama's `/api/tags` when the
         daemon is reachable; an unreachable Ollama silently contributes
-        nothing rather than failing the whole listing.
+        zero entries rather than failing the whole listing.
 
     Clients can read this once on startup to know which capabilities are
-    available and skip a 503 round-trip.
+    available, build language-aware pickers, and skip a 503 round-trip
+    on first call. The response shape is OpenAI-compatible plus the
+    aistack extension fields `capabilities`, `languages`,
+    `supports_streaming`, and `is_routing_alias` per entry — see the
+    ModelEntry schema.
     """
     data: list[dict] = list(asr_pkg.model_entries())
     if await tts_qwen3.is_healthy():
