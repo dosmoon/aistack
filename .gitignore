@@ -51,6 +51,7 @@ scratch/
 
 # Bench result dumps (run-specific, not source)
 bench/results-*.json
+bench/output/
 
 # Claude Code session/agent local state — per-developer, not project state
 .claude/
