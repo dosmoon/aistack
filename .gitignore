@@ -63,3 +63,8 @@ site/src/content/docs/
 site/dist/
 site/node_modules/
 site/.astro/
+
+# Auto-generated API reference markdown: scripts/gen_api_reference.py
+# rewrites this directory from the FastAPI OpenAPI spec on every build.
+# Source of truth = aistack/api/* docstrings + aistack/api/_schemas.py.
+docs/public/api/reference/
