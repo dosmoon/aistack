@@ -2,12 +2,15 @@
 title: 消费级 GPU 本地 ASR 性能基线
 slug: consumer-gpu-asr-baseline
 date: 2026-05-07
+updated: 2026-05-08
 tags: [asr, parakeet, benchmark, consumer-gpu, self-hosting]
 ---
 
 # 消费级 GPU 本地 ASR 性能基线
 
 > **TL;DR** RTX 4060 Laptop（8 GB VRAM，消费级笔记本独显）跑 NVIDIA Parakeet TDT 0.6B v3：稳态最佳 RTF 0.008（约 125× 实时），实际单次请求的 wall time 因 GPU 内存状态而漂移 2-4×（取决于前一次请求形态）。**最坏情况下，wall time 超过冷启动 30%+**。这篇笔记给出可独立复现的硬件、软件、负载、性能数据 + 请求间内存动力学的实测对照，读者自行决定本地 ASR 是否适合自己的场景。
+
+> **2026-05-08 增补**：本笔记表格里的 wall time（特别是 50/99 min 上的 60-490 秒和 2-4× 漂移）是 aistack **单次 NeMo 调用** 的数据，反映"未经包装的 Parakeet 在 8 GB 卡的真实表现"。aistack 当前生产路径已切到**应用层 12 分钟切片 + LCS 缝合**，跨任意时长 RTF 稳定在 0.007-0.009、reserved VRAM 锁定 7.8 GB、wall 不再漂移（97 min 音频 44 秒）。详细机制和实测数据见 [parakeet-on-consumer-gpu.md](parakeet-on-consumer-gpu.md) 的"应用层切片"章节。本笔记的数字保留作为"裸 NeMo"对照基线。
 
 ## 这篇是干什么的
 
