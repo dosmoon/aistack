@@ -23,6 +23,7 @@ import time
 from typing import Callable
 
 from aistack import _model_cache
+from aistack.asr._chunking import plan_chunks, shift_words, stitch_words
 from aistack.errors import AIError, Kind
 
 logger = logging.getLogger("aistack.asr.parakeet")
@@ -52,6 +53,30 @@ EventCallback = Callable[..., None]
 # what NVIDIA's HuggingFace model card recommends.
 _ATTENTION_MODE = os.environ.get("AISTACK_PARAKEET_ATTENTION_MODE", "local").lower()
 _ATT_CONTEXT_SIZE = os.environ.get("AISTACK_PARAKEET_ATT_CONTEXT_SIZE", "256,256")
+
+
+# Long-audio chunking. Long inputs degrade Parakeet's memory profile
+# (cuDNN workspace caching + caching-allocator interactions push VRAM
+# from ~4 GB → 8 GB and trigger PCIe spill on consumer cards). Splitting
+# into 12-min windows with 2-min overlap keeps each pass inside the
+# stable short-input regime; we stitch results via word-LCS in the
+# overlap zone so segments aren't sliced mid-clause.
+#
+# Overlap defaults to 120 s based on bench/run_experiments sweep on
+# 25-min and 50-min audio: 60 s and 120 s have identical VRAM, but
+# 120 s gives a higher overall recall (98.1% vs 97.3% on 25 min) and
+# also keeps tail-merge from inflating the last chunk past 12 min on
+# 25-min inputs (60 s → 14 min last chunk; 120 s → three even chunks).
+# Pushing further to 180 s starts breaking the safe-window invariant
+# on 50-min audio (last chunk merges to 13.8 min), regressing recall
+# and pushing reserved VRAM to 13 GB.
+#
+# Defaults are conservative — turn off via AISTACK_PARAKEET_CHUNK_DISABLE=1
+# to feed audio whole (e.g., on big GPUs that don't need it).
+_CHUNK_DISABLE = os.environ.get("AISTACK_PARAKEET_CHUNK_DISABLE", "0") == "1"
+_CHUNK_WINDOW_SEC = float(os.environ.get("AISTACK_PARAKEET_CHUNK_WINDOW_SEC", "720"))
+_CHUNK_OVERLAP_SEC = float(os.environ.get("AISTACK_PARAKEET_CHUNK_OVERLAP_SEC", "120"))
+_CHUNK_MIN_LAST_SEC = float(os.environ.get("AISTACK_PARAKEET_CHUNK_MIN_LAST_SEC", "300"))
 
 
 # Parakeet TDT v3 supports these 25 languages (plus English) — used by the
@@ -386,37 +411,30 @@ def transcribe(
         wav_path = _ensure_16k_mono_wav(audio_path, tmp_dir)
         duration = _audio_duration_sec(wav_path)
 
-        try:
-            # NeMo 2.x: transcribe() returns list of Hypothesis with .text
-            # and .timestamp = {'word': [...], 'segment': [...], 'char': [...]}
-            #
-            # num_workers=0 disables PyTorch DataLoader subprocess spawning.
-            # On Windows this prevents WinError 32 races where DataLoader
-            # worker subprocesses try to read NeMo's internal temp manifest
-            # before its writer has flushed/closed. NeMo's own example
-            # examples/asr/transcribe_speech.py defaults num_workers to 0
-            # for the same reason. batch_size=1 matches our request-at-a-
-            # time gateway: there is no batching benefit when each transcribe
-            # call services exactly one audio file.
-            results = model.transcribe(
-                [wav_path], timestamps=True, num_workers=0, batch_size=1,
+        chunks = (
+            [(0.0, duration)]
+            if _CHUNK_DISABLE or duration <= 0
+            else plan_chunks(
+                duration,
+                window_sec=_CHUNK_WINDOW_SEC,
+                overlap_sec=_CHUNK_OVERLAP_SEC,
+                min_last_sec=_CHUNK_MIN_LAST_SEC,
             )
-        except TypeError:
-            # Older NeMo versions may not accept all of these kwargs. Drop
-            # to a plain call so the request still succeeds — the Windows
-            # temp-file race risk reappears but only some versions hit it.
-            results = model.transcribe([wav_path])
-        except Exception as e:
-            raise AIError(Kind.UNKNOWN, "Parakeet",
-                          f"Inference failed: {e}", raw=e) from e
-
-        if cancel_token is not None and cancel_token.cancelled:
-            raise AIError(Kind.CANCELLED, "Parakeet", "Cancelled by user")
-
-        hyp = results[0] if results else None
-        text, segments_out, words_out = _normalize_hypothesis(
-            hyp, granularity=segment_granularity,
         )
+
+        if len(chunks) == 1:
+            text, segments_out, words_out = _run_one_pass(
+                model, wav_path, segment_granularity, cancel_token,
+            )
+        else:
+            emit("state_processing",
+                 chunk_count=len(chunks),
+                 chunk_window_sec=_CHUNK_WINDOW_SEC,
+                 chunk_overlap_sec=_CHUNK_OVERLAP_SEC)
+            text, segments_out, words_out = _run_chunked(
+                model, wav_path, chunks, segment_granularity, tmp_dir,
+                cancel_token, emit,
+            )
 
         elapsed = int(time.time() - started)
         emit("state_done", segment_count=len(segments_out), elapsed=elapsed)
@@ -430,6 +448,117 @@ def transcribe(
         }
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+# ── Inference passes (single-block + chunked) ────────────────────────────────
+
+def _model_transcribe_wav(model, wav_path: str):
+    """Wrap model.transcribe() with the cross-version kwarg fallback."""
+    try:
+        # num_workers=0 disables PyTorch DataLoader subprocess spawning.
+        # On Windows this prevents WinError 32 races where DataLoader
+        # worker subprocesses try to read NeMo's internal temp manifest
+        # before its writer has flushed/closed.
+        return model.transcribe(
+            [wav_path], timestamps=True, num_workers=0, batch_size=1,
+        )
+    except TypeError:
+        # Older NeMo versions may not accept all kwargs.
+        return model.transcribe([wav_path])
+
+
+def _run_one_pass(
+    model, wav_path: str, granularity: str, cancel_token,
+) -> tuple[str, list, list]:
+    """Single-pass inference. Returns (text, segments, words)."""
+    try:
+        results = _model_transcribe_wav(model, wav_path)
+    except Exception as e:
+        raise AIError(Kind.UNKNOWN, "Parakeet",
+                      f"Inference failed: {e}", raw=e) from e
+    if cancel_token is not None and cancel_token.cancelled:
+        raise AIError(Kind.CANCELLED, "Parakeet", "Cancelled by user")
+    hyp = results[0] if results else None
+    return _normalize_hypothesis(hyp, granularity=granularity)
+
+
+def _slice_wav(src_wav: str, dst_wav: str, start_sec: float, end_sec: float) -> None:
+    """Cut [start, end] out of a 16 kHz mono PCM WAV via ffmpeg copy.
+    The source is already in the target codec, so -c copy is exact and fast."""
+    cmd = [
+        "ffmpeg", "-y", "-loglevel", "error",
+        "-ss", f"{start_sec:.3f}",
+        "-to", f"{end_sec:.3f}",
+        "-i", src_wav,
+        "-c", "copy", dst_wav,
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise AIError(
+            Kind.MALFORMED, "Parakeet",
+            f"ffmpeg slice failed: {proc.stderr.strip()[:300]}",
+        )
+
+
+def _run_chunked(
+    model, full_wav: str, chunks: list[tuple[float, float]],
+    granularity: str, tmp_dir: str, cancel_token, emit,
+) -> tuple[str, list, list]:
+    """Multi-pass inference. Slices full_wav into chunks, runs each,
+    shifts timestamps to absolute, stitches via word-LCS in overlap.
+    Returns (text, segments, words) with segments re-derived from the
+    merged word list (segment timestamps from individual chunks are
+    discarded since the LCS seam may fall mid-segment)."""
+    merged_words: list[dict] = []
+    prev_end = None  # absolute end of previous chunk (for stitch)
+
+    for i, (start, end) in enumerate(chunks):
+        if cancel_token is not None and cancel_token.cancelled:
+            raise AIError(Kind.CANCELLED, "Parakeet", "Cancelled by user")
+        slice_path = os.path.join(tmp_dir, f"chunk_{i:03d}.wav")
+        _slice_wav(full_wav, slice_path, start, end)
+
+        emit("state_chunk_start", chunk_index=i, chunk_count=len(chunks),
+             start_sec=start, end_sec=end)
+        try:
+            results = _model_transcribe_wav(model, slice_path)
+        except Exception as e:
+            raise AIError(
+                Kind.UNKNOWN, "Parakeet",
+                f"Inference failed on chunk {i + 1}/{len(chunks)} "
+                f"[{start:.1f}-{end:.1f}s]: {e}",
+                raw=e,
+            ) from e
+        finally:
+            try:
+                os.remove(slice_path)
+            except OSError:
+                pass
+
+        hyp = results[0] if results else None
+        # We only care about words from each chunk — segments get rebuilt
+        # at the end after stitching. Granularity passed here doesn't
+        # matter, segments will be discarded.
+        _, _, chunk_words = _normalize_hypothesis(hyp, granularity=granularity)
+        chunk_words_abs = shift_words(chunk_words, start)
+
+        if prev_end is None:
+            merged_words = chunk_words_abs
+        else:
+            # Seam zone is [start, prev_end] — the slice both chunks saw.
+            merged_words = stitch_words(
+                merged_words, chunk_words_abs,
+                seam_start_sec=start, seam_end_sec=prev_end,
+            )
+        prev_end = end
+        emit("state_chunk_done", chunk_index=i,
+             words_so_far=len(merged_words))
+
+    # Re-derive segments from the merged word list. Use the granularity
+    # the caller asked for.
+    segments_out = _segments_from_words(merged_words, granularity=granularity)
+    text = " ".join(w["word"] for w in merged_words).strip()
+    return text, segments_out, merged_words
 
 
 def _normalize_hypothesis(
