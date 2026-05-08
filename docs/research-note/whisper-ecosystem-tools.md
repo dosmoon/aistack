@@ -119,14 +119,43 @@ Whisper 原生**不是**流式架构（30s 窗口 + 完整 forward pass）。这
 
 ### F. 跨域反演 / 派生工具
 
-| 项目 | 做什么 | 备注 |
-|---|---|---|
-| **WhisperSpeech** | 用 Whisper encoder 反向做 TTS | 学术性强；离线 TTS 选择多了之后没竞争力 |
-| **whisper-writer** | 桌面听写 app（按键说话出文字到任意输入框）| 终端用户工具，aistack 不直接相关 |
-| **Mac Whisper** | macOS 上的 Whisper GUI app | 商业产品，App Store 上架 |
-| **WhisperKit-based 各种 iOS app** | 移动端听写/转写 | Argmax 公司商业化 |
+这一类对 aistack 的**代码价值是零**，但有两个独立看点：① WhisperSpeech 是个学术上漂亮的"反向 ASR"实验，揭示了 Whisper 表示空间的丰富度 ② 终端用户应用（Mac Whisper / whisper-writer）证明了 Whisper 生态的产品化形态长什么样、用户愿意为什么付钱。
 
-这一类对 aistack 的**研究价值是零**，但作为"Whisper 生态终端形态长什么样"的参照系有意义 —— 比如 dosmoon 未来的产品形态可以借鉴 Mac Whisper 的 UX，但不能借鉴技术栈（Apple-only）。
+#### F.1 WhisperSpeech —— 反向 ASR 当 TTS 的概念实验
+
+由 Collabora 在 2023 年发布，思路是把 Whisper **反过来用**作 TTS。但这里"反向"不是字面意义上把 forward pass 倒过来跑（神经网络不是矩阵求逆），而是**概念层面的反向**：把 ASR 模型学到的语音表示空间反过来当 TTS 的目标空间。
+
+具体三步流程：
+
+```
+正向 Whisper: audio → [encoder] → semantic embeddings → [decoder] → text
+WhisperSpeech: text → [新训 T2S] → semantic tokens → [新训 S2A] → acoustic tokens → [Vocos vocoder] → audio
+```
+
+1. **Whisper encoder 当特征提取器**（不动 Whisper 权重），把训练集音频压成"语义 token"序列
+2. **训一个 text → semantic token 模型**（T2S），让文字能映射到这个 Whisper 空间
+3. **训一个 semantic → acoustic 模型**（S2A），加 EnCodec 压缩 + Vocos 解码出最终波形
+
+**关键洞察 —— Whisper 的 encoder 在 68 万小时多语言语音上训练，它学到的中间表示是一个非常好的"语音语义空间"**，包含 prosody（语调）、说话人特征、情感等远超"听见什么字"的信息。这件事本身证明 ASR 训练得足够大，副产品就是一个可被复用的语音通用表示。架构血统是 Google SPEAR-TTS / Meta VALL-E 那一脉，WhisperSpeech 是这条路的开源替代实现。
+
+**License**: MIT；**当前状态**: 概念验证成功但产品化竞争力不足，2024-2026 年被 Coqui XTTS-v2 / F5-TTS / OpenVoice / Piper / Qwen3-TTS 等方向超越，**没有成为生产选择**。
+
+**为什么仍然值得记一笔**：它揭示了一个 dosmoon 该思考的事 —— 如果 ASR 模型本身就编码了说话人 + 情感 + 韵律信息，那么"用 ASR 模型做更多事"（不只是转写）是个真实存在的研究方向。SenseVoice 自带 emotion + event tag 也是这条思路的另一种实现形态。
+
+#### F.2 终端用户应用 —— Whisper 生态的产品化形态参照系
+
+| 项目 | 形态 | 商业模式 | 技术含量 | 给 dosmoon 的启示 |
+|---|---|---|---|---|
+| **whisper-writer** | 跨平台桌面听写工具：按热键说话 → 转写结果自动粘贴到光标位置 | 开源免费 | 几乎为零（调 faster-whisper + 全局热键 + 剪贴板注入）| OS 级集成是真实需求；aistack 暴露好 HTTP API 即可，不必自己做 app |
+| **Mac Whisper** | macOS 商业 app：拖音频文件进去 → 出 srt/txt + 波形拖动改文字的 GUI | App Store 付费下载 | 中（包了 whisper.cpp + Swift UI）| **单开发者据报年入数十万美金**，证明非技术用户为"省掉命令行"愿意付费。这是 dosmoon 产品形态的市场存在性证据 |
+| **WhisperKit-based iOS apps** | Argmax 公司基于 WhisperKit（CoreML+ANE）做的一系列移动端语音应用 | 商业产品 | 高（Apple Silicon 优化 + 自家 SDK）| 移动端 + ANE 优化是另一个生态位，aistack 不参与（Linux/Win 优先）|
+
+**关键观察**：F 类没有任何项目能直接被 aistack 集成，但它们指出了**Whisper 生态的产品市场是真实存在的、有人在赚钱、用户愿意付费**。给未来 dosmoon 产品形态决策的启示：
+
+1. **市场已被验证** —— 不是"做这个有没有人要"的疑问，是"做哪个细分能切进去"的问题
+2. **GUI 包 whisper.cpp 是个有现金流的路径**（Mac Whisper 路线）
+3. **OS 级集成是另一个生态位**（whisper-writer 路线），aistack 只要继续做好 HTTP API，让别人能轻松接入即可
+4. **Apple 平台被 Argmax/WhisperKit 占住了** —— dosmoon 若做产品形态，Linux/Windows 是更明智的差异化方向，而不是去跟 Argmax 在 Apple 生态里硬碰
 
 ## 三、aistack 视角下的实操总结
 
