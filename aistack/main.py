@@ -130,6 +130,7 @@ def health() -> dict:
     "/v1/models",
     summary="List servable models",
     response_model=ModelsList,
+    response_model_exclude_none=True,
     responses={
         200: {
             "description": (
