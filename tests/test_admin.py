@@ -98,3 +98,68 @@ def test_fragment_logs_n_param_clamped():
         r = c.get("/admin/fragments/logs?n=999999")
         assert r.status_code == 200
         # No crash; capacity-clamped server-side.
+
+
+def test_reset_asr_state_json_response():
+    """Plain POST (no HTMX header) returns the count + remaining cache stats."""
+    _model_cache._CACHE.clear()
+    _model_cache.put("fake-asr-main", "k1", object(), category="asr-main")
+    _model_cache.put("fake-asr-aux", "k2", object(), category="asr-aux")
+    _model_cache.put("fake-tts", "k3", object(), category="tts-main")
+    try:
+        with TestClient(app) as c:
+            r = c.post("/admin/api/reset-asr-state")
+            assert r.status_code == 200
+            body = r.json()
+            assert body["evicted"] == 2
+            remaining_providers = {e["provider"] for e in body["remaining"]["loaded"]}
+            assert remaining_providers == {"fake-tts"}
+    finally:
+        _model_cache._CACHE.clear()
+
+
+def test_reset_asr_state_htmx_returns_cache_fragment():
+    """HTMX requests get the re-rendered cache fragment for in-place swap."""
+    _model_cache._CACHE.clear()
+    _model_cache.put("fake-asr-main", "k1", object(), category="asr-main")
+    try:
+        with TestClient(app) as c:
+            r = c.post(
+                "/admin/api/reset-asr-state", headers={"HX-Request": "true"}
+            )
+            assert r.status_code == 200
+            assert "text/html" in r.headers["content-type"]
+            assert "No models currently resident" in r.text
+    finally:
+        _model_cache._CACHE.clear()
+
+
+def test_reset_asr_state_empty_cache_is_noop():
+    _model_cache._CACHE.clear()
+    with TestClient(app) as c:
+        r = c.post("/admin/api/reset-asr-state")
+        assert r.status_code == 200
+        assert r.json()["evicted"] == 0
+
+
+def test_cache_fragment_shows_reset_button_when_asr_loaded():
+    _model_cache._CACHE.clear()
+    _model_cache.put("fake-asr", "k1", object(), category="asr-main")
+    try:
+        with TestClient(app) as c:
+            r = c.get("/admin/fragments/cache")
+            assert "Reset ASR state" in r.text
+            assert "/admin/api/reset-asr-state" in r.text
+    finally:
+        _model_cache._CACHE.clear()
+
+
+def test_cache_fragment_hides_reset_button_when_no_asr():
+    _model_cache._CACHE.clear()
+    _model_cache.put("fake-tts", "k1", object(), category="tts-main")
+    try:
+        with TestClient(app) as c:
+            r = c.get("/admin/fragments/cache")
+            assert "Reset ASR state" not in r.text
+    finally:
+        _model_cache._CACHE.clear()

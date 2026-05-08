@@ -178,3 +178,33 @@ async def api_metrics() -> JSONResponse:
     """Machine-readable metrics snapshot. Same data the dashboard renders.
     Stable JSON shape — see docs/api/observability.md for the schema."""
     return JSONResponse(obs_metrics.snapshot())
+
+
+# Categories the ASR providers tag their cache entries with. Kept in sync
+# with the `category=` arguments at sensevoice.py / parakeet.py /
+# faster_whisper.py call sites — evicting both empties every ASR weight
+# the cache currently holds without touching TTS/LLM peers.
+_ASR_CACHE_CATEGORIES = ("asr-main", "asr-aux")
+
+
+@router.post("/api/reset-asr-state", response_model=None)
+async def api_reset_asr_state(request: Request) -> HTMLResponse | JSONResponse:
+    """Drop every ASR weight currently resident in the model cache.
+
+    Useful between bench runs to free VRAM without restarting uvicorn.
+    In-flight requests keep their own reference to the loaded model and
+    finish normally; only the cache slot is released, so the next call
+    triggers a cold load.
+
+    TTS and LLM cache entries are untouched.
+
+    Returns the re-rendered cache fragment when called from HTMX (so the
+    admin UI swaps it in place), or JSON `{evicted, remaining}` otherwise
+    (so scripts and bench runners can read the count directly).
+    """
+    evicted = sum(_model_cache.evict_category(c) for c in _ASR_CACHE_CATEGORIES)
+    if request.headers.get("hx-request"):
+        return templates.TemplateResponse(
+            request, "_cache.html", {"cache": _model_cache.stats()},
+        )
+    return JSONResponse({"evicted": evicted, "remaining": _model_cache.stats()})

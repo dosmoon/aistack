@@ -21,3 +21,13 @@
     Idle entries past keep_alive ({{ cache.keep_alive_sec }}s) are evicted by the background scanner.
   </p>
 {% endif %}
+{% set asr_loaded = cache.loaded | selectattr("category", "in", ["asr-main", "asr-aux"]) | list %}
+{% if asr_loaded %}
+  <button type="button"
+          hx-post="/admin/api/reset-asr-state"
+          hx-target="closest div"
+          hx-swap="innerHTML"
+          style="margin-top: 0.6rem; font-size: 0.78rem;">
+    Reset ASR state ({{ asr_loaded | length }} resident)
+  </button>
+{% endif %}

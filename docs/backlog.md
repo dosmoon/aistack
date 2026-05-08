@@ -40,7 +40,7 @@ chronicle.
 
 | Item | State | Note |
 |---|---|---|
-| `POST /admin/api/reset-asr-state` | ready | Manual "drop loaded ASR models, free VRAM" button. Useful between bench runs without restarting uvicorn. |
+| `POST /admin/api/reset-asr-state` | done | Drops `asr-main` + `asr-aux` cache categories, returns JSON for scripts and the re-rendered cache fragment for HTMX; admin UI button appears whenever ASR weights are resident. |
 | Prometheus `/metrics` OpenMetrics exporter | later | Add when there's a Grafana on the other end. JSON `/admin/api/metrics` already covers self-written scripts. |
 | D4 — install / uninstall actions in admin UI | ready | Closes the loop on D4 (read-only model browser → full mgmt). Concrete next product slice. |
 
@@ -57,6 +57,7 @@ chronicle.
 
 | Date | What |
 |---|---|
+| 2026-05-08 | `POST /admin/api/reset-asr-state` — manual "drop ASR weights, free VRAM" between bench runs without restarting uvicorn. |
 | 2026-05-08 | Centralized env-driven config in `aistack/config.py`; user-facing `docs/configuration.md`. |
 | 2026-05-08 | Parakeet long-audio chunked transcription (12-min windows, 2-min overlap, word-LCS stitch) + bench experiment harness. Solves long-audio OOM, 1-segment-for-50-min, 4× wall-time variance. |
 | 2026-05-08 | Bench reference data: 4 long mp3s (12/25/50/97 min) + en/zh transcripts as ground truth. |
