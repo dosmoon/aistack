@@ -33,6 +33,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from aistack import _gpu_lock
+from aistack.api._schemas import ErrorEnvelope, TranscriptionResponse
 from aistack import observability as obs
 from aistack.asr import _SUPPORTS_STREAMING, faster_whisper as _fw
 from aistack.asr import installed_providers
@@ -535,17 +536,86 @@ def _to_openai_response(result: dict, response_format: str) -> dict | str:
     return {"text": result.get("text", "")}
 
 
-@router.post("/v1/audio/transcriptions")
+@router.post(
+    "/v1/audio/transcriptions",
+    summary="Transcribe an audio file",
+    response_model=TranscriptionResponse,
+    response_model_exclude_none=True,
+    responses={
+        200: {
+            "content": {
+                "application/json": {},  # Reuses response_model TranscriptionResponse.
+                "text/plain": {
+                    "schema": {
+                        "type": "string",
+                        "description": "Returned when response_format=text. The body is the raw transcription text.",
+                    },
+                },
+                "text/event-stream": {
+                    "schema": {
+                        "type": "string",
+                        "description": "Returned when stream=true. SSE stream of transcript.text.delta events terminated by transcript.text.done. Models with supports_streaming=false emit a warning event followed by a single delta with the full transcription.",
+                    },
+                },
+            },
+        },
+        400: {"model": ErrorEnvelope, "description": "Malformed request — unsupported response_format / segment_granularity / model id."},
+        413: {"model": ErrorEnvelope, "description": "Audio too large for the chosen backend's VRAM budget."},
+        499: {"model": ErrorEnvelope, "description": "Client disconnected mid-request (nginx convention)."},
+        503: {"model": ErrorEnvelope, "description": "GPU slot busy — gateway is serving another inference. Retry-After is set."},
+        500: {"model": ErrorEnvelope, "description": "Unexpected internal failure."},
+    },
+)
 async def transcribe(
     request: Request,
-    file: UploadFile = File(..., description="Audio file (any ffmpeg-readable format)."),
+    file: UploadFile = File(..., description="Audio file (any ffmpeg-readable format: mp3, mp4, wav, m4a, flac, ogg, webm, mkv)."),
     model: str = Form("", description="Provider/model selector. Empty or 'auto' = pick best installed backend for the given language. Otherwise: whisper-{size} | parakeet | sensevoice."),
     language: str | None = Form(None, description="ISO 639-1 code (e.g. 'en', 'zh'). Omit for auto-detect."),
-    response_format: str = Form("json", description="json | verbose_json | text"),
-    translate: bool = Form(False, description="If true, transcribe to English instead of source language. Only Whisper-family models support translation."),
+    response_format: str = Form("json", description="json | verbose_json | text. Ignored when stream=true."),
+    translate: bool = Form(False, description="If true, transcribe to English instead of source language. Only Whisper-family models support translation; Parakeet and SenseVoice reject with 400."),
     stream: bool = Form(False, description="If true, return Server-Sent Events with one transcript.text.delta per decoded segment, ending with transcript.text.done. Models with supports_streaming=false in /v1/models still accept this and emit a warning event followed by a single delta. response_format is ignored when stream=true."),
     segment_granularity: str = Form("sentence", description="How to group word timestamps into the `segments` field. 'sentence' (default) returns full sentences — right input for line-by-line LLM translation, semantic search, agent reasoning. 'subtitle' returns SRT-cue-sized segments (≤70 chars, 1–7s) for clients that emit SRT/VTT directly without a downstream cue-sizing pass. Affects Parakeet only; faster-whisper and SenseVoice produce VAD-driven segments natively."),
 ):
+    """OpenAI Whisper API compatible — clients written against OpenAI's
+    `/v1/audio/transcriptions` work with no code changes other than the
+    base URL.
+
+    **Backend selection.** The `model` field accepts any of:
+    - `whisper-{size}` (`whisper-tiny` ... `whisper-large-v3-turbo`,
+      `whisper-distil-large-v3`) → faster-whisper / CTranslate2
+    - `whisper-1` → maps to `whisper-small` for OpenAI legacy compat
+    - bare size alias (`small`, `medium`, ...) → faster-whisper
+    - `parakeet` or `nvidia/parakeet-tdt-0.6b-v3` → NVIDIA NeMo
+    - `sensevoice` or `iic/SenseVoiceSmall` → Alibaba FunASR
+    - `auto` (or empty) → aistack router picks based on `language`:
+      CJK → SenseVoice, European → Parakeet, else → Whisper-small.
+      Falls back gracefully when a preferred backend is not installed.
+
+    **GPU scheduling.** aistack runs at most one inference at a time
+    across ASR / LLM / TTS. Concurrent requests get HTTP 503 with a
+    `Retry-After` header. The blocking inference runs in a worker
+    thread; the FastAPI event loop stays responsive (`/health` keeps
+    answering, and the disconnect watcher can cancel a running
+    transcription cooperatively).
+
+    **Streaming.** When `stream=true` the response is `text/event-stream`
+    with `data: {...}\\n\\n` frames per SSE convention. Event types:
+    `transcript.text.delta` (one per emitted segment, with `text` and
+    optional `start`/`end`/`words`), and `transcript.text.done` once at
+    the end. Models advertising `supports_streaming=false` in
+    `/v1/models` (currently Parakeet) emit a single `warning` event
+    followed by a single `delta` containing the full transcription —
+    the gateway will not silently chunk a non-streaming model and pay
+    the WER cost.
+
+    **Cancellation.** If the client disconnects mid-request, aistack
+    sets a cooperative cancel token between segments, releases the GPU
+    slot, and returns 499 (nginx convention) for clients that re-poll.
+
+    **Errors.** Every non-2xx response uses the standard envelope
+    `{error: {kind, provider, message}}`. See the errors documentation
+    for status code semantics.
+    """
     if response_format not in ("json", "verbose_json", "text"):
         raise HTTPException(
             status_code=400,
