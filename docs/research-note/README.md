@@ -39,6 +39,7 @@ aistack 这一年多调过的"上游没写的实情"在累积——尤其是消�
 | [aistack-positioning-and-product-paths.md](aistack-positioning-and-product-paths.md) | 为什么 aistack 必然是研发形态、不可能演化成终端用户产品；以及未来若做产品形态可行的几条路径（whisper.cpp 离线优先 / Docker 全家桶 / sherpa-onnx 多引擎）。**强项是定位判断，不是技术决策**——具体技术细节留到新仓库再展开。 | 2026-05-08 |
 | [whisper-translation-capability.md](whisper-translation-capability.md) | Whisper `task=translate` 的真实边界：**X→English only**，不能做 EN→ZH 或任何 non-English 目标翻译，paper §2.1 数据集决定的硬限制。需要 EN→ZH 字幕时三条可行路径（Whisper+LLM 级联 / SeamlessM4T / Qwen2-Audio）的对比与待实测项。 | 2026-05-08 |
 | [chinese-asr-engine-survey.md](chinese-asr-engine-survey.md) | 中文 ASR 引擎选型基线研究（2026 视角）：FireRedASR-AED / Paraformer-large / SenseVoice / Whisper-large-v3 / Fun-ASR / FireRedASR2S 全景对比。AISHELL-1/2 + WenetSpeech 公开 CER 数据 + 各引擎设计意图 + CER 评估方法陷阱 + dosmoon 中文 bench 数据集选型策略 + 长音频处理 + 8GB 卡集成成本评估 + 实测计划。**desk research, 实测前必读**。 | 2026-05-08 |
+| [whisper-ecosystem-tools.md](whisper-ecosystem-tools.md) | Whisper 生态系统全景：6 大类 25+ 项目分类整理。推理引擎（faster-whisper / whisper.cpp / insanely-fast-whisper / WhisperKit）/ 蒸馏小模型（distil-large-v3 是被低估的最优升级）/ 功能增强层（WhisperX / CrisperWhisper / stable-ts）/ 流式化（whisper_streaming / SimulStreaming / WhisperLive）/ Whisper-style 重训（OWSM / Belle-whisper）/ 跨域反演。aistack 该集成什么、不该集成什么、未来产品形态用得上什么的判断。**填补 Whisper 生态信息盲点的入口**。 | 2026-05-08 |
 
 ## 风格约定
 
