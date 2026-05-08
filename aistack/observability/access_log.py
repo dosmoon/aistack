@@ -6,7 +6,7 @@ hot path off the disk.
 
 File naming: <LOG_DIR>/access-YYYY-MM-DD.jsonl  (UTC).
 
-Fields are documented in docs/api/observability.md. The writer never
+Fields are documented in docs/public/api/observability.md. The writer never
 raises into the request thread: queue.put() is non-blocking and a full
 queue silently drops records (with a one-shot warning) so a wedged
 disk doesn't take down inference.

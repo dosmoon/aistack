@@ -19,7 +19,7 @@ FastAPI StreamingResponse so the client sees first tokens as soon as
 Ollama emits them.
 
 Errors are wrapped in the standard envelope (see aistack/errors.py
-and docs/api/errors.md). Connection-refused on Ollama maps to
+and docs/public/api/errors.md). Connection-refused on Ollama maps to
 `network` kind with an actionable message.
 """
 

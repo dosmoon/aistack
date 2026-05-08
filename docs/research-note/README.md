@@ -14,7 +14,7 @@
 
 - 纯文档抄录或翻译（去看上游文档就行）
 - 单次试错日记（那是 `docs/progress/` 的事）
-- API 契约（那是 `docs/api/` 的事）
+- API 契约（那是 `docs/public/api/` 的事）
 - 产品设计或架构决策（那是 `docs/design/` 的事）
 
 ## 为什么单建一个目录

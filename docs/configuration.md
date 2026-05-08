@@ -144,7 +144,7 @@ runtime flips do not persist past restart.
 runtime-mutable toggle dict in `aistack/observability/config.py`.
 
 Wire formats (JSONL fields, payload directory layout, metrics JSON
-schema) are documented in `docs/api/observability.md`.
+schema) are documented in `docs/public/api/observability.md`.
 
 ---
 

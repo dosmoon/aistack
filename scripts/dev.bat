@@ -39,7 +39,7 @@ REM   set AISTACK_OBS_PAYLOAD_DIR=D:\AI_Models\..\aistack_captures
 REM   set AISTACK_OBS_PAYLOAD_MAX_GB=5
 REM   set AISTACK_OBS_PAYLOAD_MAX_DAYS=7
 REM   set AISTACK_OBS_LOG_DIR=.\logs
-REM See docs/api/observability.md for the wire formats.
+REM See docs/public/api/observability.md for the wire formats.
 
 cd /d "%REPO_ROOT%"
 "%PY%" -m uvicorn aistack.main:app --host 127.0.0.1 --port 11500 --reload

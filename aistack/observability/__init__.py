@@ -2,7 +2,7 @@
 
 Three independent feature flags, all default-on except payload capture
 (which writes user data to disk). See `config.py` for env vars and
-the runtime-mutable settings dict, and `docs/api/observability.md`
+the runtime-mutable settings dict, and `docs/public/api/observability.md`
 for the wire formats.
 
 Components:

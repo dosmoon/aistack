@@ -176,7 +176,7 @@ async def api_observability_clear_payload(request: Request) -> HTMLResponse:
 @router.get("/api/metrics")
 async def api_metrics() -> JSONResponse:
     """Machine-readable metrics snapshot. Same data the dashboard renders.
-    Stable JSON shape — see docs/api/observability.md for the schema."""
+    Stable JSON shape — see docs/public/api/observability.md for the schema."""
     return JSONResponse(obs_metrics.snapshot())
 
 
