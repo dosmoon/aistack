@@ -17,29 +17,36 @@ Internal implementation choices (which inference engine, where the GPU
 lives, how scheduling works) are **not** part of the contract — they
 may change without API version bumps.
 
-## Where to start
+## Two flavours of documentation in this section
 
-If you are integrating aistack for the first time, **read
-[`integration.md`](integration.md) first** — it walks through the
-typical consumer journey from capability discovery to error handling
-in one coherent narrative.
+- **Narrative pages** (this page, [`integration`](./integration/),
+  [`asr`](./asr/), [`tts`](./tts/), [`llm`](./llm/),
+  [`models`](./models/), [`errors`](./errors/),
+  [`observability`](./observability/)) explain *why* the contract
+  looks the way it does — design choices, integration journeys,
+  trade-offs.
+- **[Auto-generated reference](./reference/)** lists *what* every
+  endpoint accepts and returns — request/response field tables,
+  enum values, error codes, JSON schemas. The reference is generated
+  from the live FastAPI app's OpenAPI spec on every build, so it
+  cannot drift from the running code.
 
-The per-endpoint pages on this index are the field-by-field reference
-material that integration.md links into.
+If you are integrating aistack for the first time, start with the
+[Integration Guide](./integration/). When you need a specific field's
+type or an exhaustive list of error codes, jump to the
+[Reference](./reference/).
 
 ## Versioning policy
 
 Endpoints are prefixed with `/v1/`. The contract within `/v1/*`
 follows additive backward compatibility:
 
-| Change | Allowed in `/v1`? |
-|---|---|
-| Adding new endpoints | ✅ |
-| Adding new optional fields to requests | ✅ |
-| Adding new fields to responses | ✅ |
-| Tightening field validation | ⚠️ Avoid; only when current behavior is buggy |
-| Removing or renaming any field | ❌ requires `/v2` |
-| Changing response shape | ❌ requires `/v2` |
+- Adding new endpoints — allowed
+- Adding new optional fields to requests — allowed
+- Adding new fields to responses — allowed
+- Tightening field validation — discouraged; only when current behavior is buggy
+- Removing or renaming any field — requires `/v2`
+- Changing response shape — requires `/v2`
 
 When `/v2` is introduced, `/v1` will continue serving for at least one
 release cycle so consumers can migrate without coupled deploys.
@@ -70,14 +77,14 @@ OpenAI API compatible where the OpenAI spec applies:
 - `POST /v1/chat/completions` mirrors OpenAI's chat completion API.
 - `GET /v1/models` mirrors OpenAI's model list shape, with aistack
   extension fields (`capabilities`, `languages`, `is_routing_alias`,
-  `supports_streaming`) added per entry. See [models.md](models.md).
+  `supports_streaming`) added per entry.
 
 Where aistack adds capabilities beyond the OpenAI spec (e.g.
 SenseVoice's `task_type` parameter, vLLM-Omni's voice clone fields),
 they are exposed as extra optional fields. Standard OpenAI clients
 that ignore unknown fields work without modification.
 
-### Streaming
+## Streaming
 
 All three capability endpoints support streaming where the underlying
 model supports it. Discovery is via the `supports_streaming` field
@@ -87,50 +94,11 @@ shape OpenAI uses for that capability (`transcript.text.delta` /
 LLM, raw audio chunks via vLLM-Omni's streaming endpoint for TTS).
 ASR adds an aistack `warning` event for the rare case where a
 selected model does not natively stream — see
-[`integration.md` §4](integration.md#streaming-transcription-with-streamtrue).
-
-## Endpoints
-
-| Endpoint | Method | Doc |
-|---|---|---|
-| `/health` | GET | (this page — see below) |
-| `/v1/models` | GET | [models.md](models.md) |
-| `/v1/audio/transcriptions` | POST | [asr.md](asr.md) |
-| `/v1/audio/speech` | POST | [tts.md](tts.md) |
-| `/v1/chat/completions` | POST | [llm.md](llm.md) |
-
-For a tour that combines all of these into a working integration,
-read [`integration.md`](integration.md).
-
-For the **performance & availability analysis** layer (built-in metrics,
-JSONL access logs, request/response capture, `X-Request-ID` propagation,
-`/admin/api/metrics` JSON endpoint), see
-[`observability.md`](observability.md).
-
-## `GET /health`
-
-Liveness probe. Returns 200 with a small JSON body when the worker is
-ready to accept requests.
-
-```bash
-curl http://127.0.0.1:11500/health
-```
-
-```json
-{
-  "status": "ok",
-  "version": "0.0.1"
-}
-```
-
-A failed health check (connection refused, non-200) means aistack is
-down or still starting; consumers should surface this as "service
-unreachable" with a hint to start the dev server.
+[`integration.md` §4](./integration/#streaming-transcription-with-streamtrue).
 
 ## Errors
 
-All non-2xx responses use a common envelope. See [errors.md](errors.md)
-for the full contract, including HTTP status codes per error kind.
+All non-2xx responses use a common envelope:
 
 ```json
 {
@@ -142,6 +110,12 @@ for the full contract, including HTTP status codes per error kind.
 }
 ```
 
+Consumers branch on `error.kind` (machine-readable) and surface
+`error.message` (human-readable, safe to display). The
+[errors page](./errors/) explains the design and the consumer
+pattern; the [reference](./reference/) lists every kind value and
+its HTTP status mapping.
+
 ## Live API explorer
 
 While aistack is running, FastAPI's auto-generated Swagger UI is at:
@@ -150,6 +124,6 @@ While aistack is running, FastAPI's auto-generated Swagger UI is at:
 http://127.0.0.1:11500/docs
 ```
 
-It always reflects the running version's actual schema. For human
-explanation (request semantics, error scenarios, examples, design
-rationale) see the per-endpoint markdown files in this directory.
+It always reflects the running version's actual schema. The
+[Reference section](./reference/) is the build-time rendering of
+the same OpenAPI spec, so the two should agree exactly.

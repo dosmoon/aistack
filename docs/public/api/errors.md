@@ -12,40 +12,49 @@ can branch on `error.kind` (machine-readable) and surface
 `error.message` (human-readable, safe to display). The envelope is
 identical regardless of which endpoint produced it.
 
-## Schema
+The wire-format schema (every field, every kind value, the HTTP
+status mapping) lives in the auto-generated
+[reference for the error envelope](./reference/asr/#schema-errorenvelope).
+This page covers the design rationale and the consumer-side pattern —
+the *why* and *how to use it*, not the *what*.
 
-```json
-{
-  "error": {
-    "kind":     "network | malformed | overflow | cancelled | unknown",
-    "provider": "aistack | Faster-Whisper | Parakeet | SenseVoice | ...",
-    "message":  "Free-form human-readable description."
-  }
-}
-```
+## Why one envelope across all endpoints
 
-Every field is required. The `provider` field identifies which
-component reported the failure; "aistack" means the gateway itself
-(routing, validation, upstream connectivity), while a specific provider
-name (e.g. "Parakeet") means a backend rejected the request. Consumers
-that want to attribute failures should branch on `provider`.
+Three reasons aistack uses the same `{error: {kind, provider, message}}`
+shape for every non-2xx response:
 
-## Kinds
+1. **One handler per consumer.** A client that integrates with ASR,
+   TTS, and LLM writes the error path once, not three times.
+2. **`kind` is stable; `message` is not.** Code branches on `kind`
+   (a small, stable enum); humans read `message` (free-form, may be
+   reworded between releases). String-matching `message` is the bug;
+   branching on `kind` is the contract.
+3. **`provider` attributes the failure.** When something goes wrong
+   you want to know "is it the gateway routing, my upstream Ollama,
+   or the Whisper backend?" — `provider` answers without log
+   spelunking. `"aistack"` means the gateway itself; a backend name
+   like `"Parakeet"` means that subsystem rejected the request.
 
-| Kind | Meaning | HTTP | Retryable? |
-|---|---|---|---|
-| `malformed` | Bad input — file missing, format unsupported, unknown model id | 400 | ❌ Caller must fix the request |
-| `overflow` | Input too large for the chosen model / VRAM | 413 | ⚠️ Try smaller model or shorter clip |
-| `cancelled` | Client disconnected mid-request | 499 | n/a (the caller already left) |
-| `network` | Upstream backend unreachable; service not running; model load failed | 503 | ✅ Retry after 5s |
-| `unknown` | Internal error not classified by the catalog | 500 | ⚠️ Surface raw, don't auto-retry |
+## Status code semantics worth knowing
 
-`499` (`cancelled`) follows the nginx convention for "client closed
-request" — it is not a standard HTTP code but is widely understood.
+The kind → status mapping is in the
+[reference table](./reference/asr/#schema-errorenvelope). Two
+non-obvious points:
 
-## Examples
+- **`499` (`cancelled`)** follows nginx's "client closed request"
+  convention — it is not a standard HTTP code but is widely
+  understood. The caller has already left, so this status is
+  informational only; it shows up in your access logs but never in
+  a live response.
+- **`503` is overloaded** between two real situations: "Ollama is
+  down / model failed to load" and "GPU slot is busy serving
+  another inference, retry shortly." Distinguish them by the
+  `Retry-After` header — present only on the slot-busy path. See
+  the back-pressure section below.
 
-### `malformed` — unknown model id
+## Error examples
+
+### Unknown model id (`malformed`, 400)
 
 ```bash
 curl -X POST http://127.0.0.1:11500/v1/audio/transcriptions \
@@ -65,7 +74,7 @@ Content-Type: application/json
 }
 ```
 
-### `network` — backend not installed
+### Backend not installed (`network`, 503)
 
 When the user requests Parakeet but `nemo_toolkit` is not in the venv:
 
@@ -82,9 +91,7 @@ Content-Type: application/json
 }
 ```
 
-### `network` — TTS upstream container down
-
-When Qwen3-TTS Docker is not running:
+### TTS upstream container down (`network`, 503)
 
 ```http
 HTTP/1.1 503 Service Unavailable
@@ -99,11 +106,10 @@ Content-Type: application/json
 }
 ```
 
-### `503` from the GPU lock — busy, not an error envelope
+### GPU slot busy (`network` + `Retry-After`, 503)
 
-The single-task GPU lock returns plain FastAPI `HTTPException` with a
-`Retry-After` header, not the envelope above. Consumers should treat
-this as a transient busy signal:
+Single-task GPU lock back-pressure — server is healthy, just
+already busy serving another inference:
 
 ```http
 HTTP/1.1 503 Service Unavailable
@@ -119,25 +125,35 @@ Content-Type: application/json
 }
 ```
 
-The slot-busy 503 uses the same envelope as every other error path —
-`kind="network"` because the slot-busy state is a transport-level
-back-pressure signal (server is healthy, retry after the
-`Retry-After` hint). Callers should detect it specifically by the
-`Retry-After` header rather than by `kind` alone, since other
-`network` errors (Ollama unreachable, model download failed) are also
-503 and would otherwise be indistinguishable.
+The slot-busy path uses the same envelope shape as every other
+`503` because it *is* a transport-level back-pressure signal.
+Distinguish it from "Ollama is down" by the `Retry-After` header —
+present only on the slot-busy path. Other `network` errors (model
+download failure, upstream daemon unreachable) are also `503` and
+would otherwise be indistinguishable.
 
 ## Consumer-side handling pattern
 
+A reference Python implementation that handles all five kinds plus
+the slot-busy retry case:
+
 ```python
 import httpx
+
+class AistackError(Exception):
+    def __init__(self, kind, provider, message, status):
+        self.kind, self.provider, self.message, self.status = kind, provider, message, status
+        super().__init__(f"[{kind}/{provider}] {message}")
+
+class BusyError(Exception):
+    def __init__(self, retry_after):
+        self.retry_after = retry_after
 
 def call_aistack(method, url, **kw):
     r = httpx.request(method, url, **kw)
     if r.status_code == 200:
         return r.json()
     if r.status_code == 503 and r.headers.get("Retry-After"):
-        # Single-task busy signal — retry after the suggested delay
         raise BusyError(retry_after=int(r.headers["Retry-After"]))
     try:
         env = r.json().get("error", {})

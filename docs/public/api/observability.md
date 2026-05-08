@@ -7,63 +7,53 @@ sidebar:
 
 # Observability — performance & availability analysis
 
-aistack ships a built-in observability layer for **performance analysis**
-(latency distributions, throughput, RTF) and **availability analysis**
-(error rates, slot-busy rejections, disconnects). Three independent
-toggles, all on by default except payload capture.
+aistack ships a built-in observability layer for **performance
+analysis** (latency distributions, throughput, RTF) and **availability
+analysis** (error rates, slot-busy rejections, disconnects). Three
+independent toggles, all on by default except payload capture.
 
-| Toggle | Default | What it does |
-|---|---|---|
-| `metrics` | on | In-process rolling histograms + counters per capability. Read via `/admin/api/metrics` and the `/admin` dashboard. Cost: <10 µs per request. |
-| `access_log` | on | One JSONL line per request appended to `<LOG_DIR>/access-YYYY-MM-DD.jsonl`. Cost: enqueue + background flush. |
-| `payload` | **off** | Per-request request body and response body persisted to disk for replay/diagnosis. Cost: disk IO; size+age bounded. |
+The wire-format schemas (the metrics JSON, the access-log JSONL fields,
+the payload capture layout) are owned by code and rendered into the
+[admin reference](./reference/admin/) on every build. This page covers
+the *why* — design rationale, when to use each toggle, the optional
+`X-Request-ID` story for cross-system correlation, and analysis recipes.
 
-Toggle at startup with env vars (see below) or live from the
-`/admin` dashboard. Live toggles are session-only — restart returns to
-the env-driven defaults.
+## Three independent toggles
 
-## Env vars
+Why three switches and not one master toggle: the three streams have
+**radically different cost profiles**, so bundling them would force
+"all or nothing" choices that fit no real workflow.
 
-| Var | Default | Notes |
-|---|---|---|
-| `AISTACK_OBS_METRICS` | `on` | `on` / `off` |
-| `AISTACK_OBS_ACCESS_LOG` | `on` | `on` / `off` |
-| `AISTACK_OBS_PAYLOAD` | `off` | `on` / `off` |
-| `AISTACK_OBS_LOG_DIR` | `./logs` | JSONL output dir |
-| `AISTACK_OBS_PAYLOAD_DIR` | `<HF_HOME>/../aistack_captures` (or `./captures`) | per-request capture root |
-| `AISTACK_OBS_PAYLOAD_MAX_GB` | `5` | total disk cap, oldest evicted |
-| `AISTACK_OBS_PAYLOAD_MAX_DAYS` | `7` | max age, older evicted |
-| `AISTACK_OBS_PAYLOAD_RESP_MAX_MB` | `50` | per-request response body cap; over → meta records `resp_truncated:true` |
-| `AISTACK_OBS_METRICS_WINDOW_MIN` | `60` | rolling window for percentiles |
+- `metrics` — in-process rolling histograms + counters per capability.
+  Cost: < 10 µs per request. **Always wanted.**
+- `access_log` — one JSONL line per request appended to today's
+  daily-rolling file under `AISTACK_OBS_LOG_DIR`. Cost: enqueue +
+  background flush. **Almost always wanted.**
+- `payload` — request body and response body persisted to disk for
+  replay/diagnosis. Cost: disk IO; size + age bounded. **Almost
+  never wanted in steady state**; turn on only when a specific bug
+  needs the bytes.
 
-## Consumer integration — what changes for clients?
+Toggle at startup with env vars (see configuration in the repo
+README) or live from the `/admin` dashboard. Live toggles are
+session-only — restart returns to the env-driven defaults. The
+toggles' **wire effect on consumers is zero** — every observability
+feature is server-side and fully backward compatible. Existing
+clients (CLI scripts, VideoCraft, OpenAI-shape SDKs) work unmodified
+and start showing up in metrics / access logs immediately.
 
-**Nothing is required.** Every observability feature is server-side and
-fully backward compatible:
-
-* `/v1/audio/transcriptions`, `/v1/chat/completions`, `/v1/audio/speech`
-  request and response shapes are unchanged.
-* No new required headers. No new required fields. Existing clients
-  (CLI scripts, VideoCraft, OpenAI-shape SDKs) work unmodified and
-  start showing up in metrics / access logs immediately.
-* Metrics + access log are on by default; payload capture is off by
-  default. Toggling any of them via `/admin` or env vars never changes
-  the wire contract.
-
-The **one optional enhancement** for clients that want trace stitching:
-
-### Optional: send `X-Request-ID` for cross-system log correlation
+## Optional: send `X-Request-ID` for cross-system correlation
 
 If the caller has its own job id (a VideoCraft pipeline step, an agent
 task id, a user-facing request id), pass it as the `X-Request-ID`
 header. aistack will:
 
-1. use it as the `request_id` field in `logs/access-YYYY-MM-DD.jsonl`
-2. use it as the directory name when payload capture is on
-   (`<PAYLOAD_DIR>/<date>/<X-Request-ID>/`)
-3. attach it to in-memory metrics samples (visible under `recent` in
-   `/admin/api/metrics`)
-4. echo it back in the response header
+1. Use it as the `request_id` field in the access log JSONL.
+2. Use it as the directory name when payload capture is on
+   (`<PAYLOAD_DIR>/<date>/<X-Request-ID>/`).
+3. Attach it to in-memory metrics samples (visible under `recent` in
+   `/admin/api/metrics`).
+4. Echo it back in the response header.
 
 ```python
 import httpx
@@ -81,129 +71,88 @@ returned_id = resp.headers["X-Request-ID"]
 
 **Format constraints** when sending your own id:
 
-* ASCII letters, digits, and `-_:.` — anything else is rejected and
-  aistack generates a 16-hex id instead
-* max 128 chars — over-length values are also rejected
-* uniqueness is the caller's responsibility (we do not deduplicate)
+- ASCII letters, digits, and `-_:.` — anything else is rejected and
+  aistack generates a 16-hex id instead.
+- Max 128 chars — over-length values are also rejected.
+- Uniqueness is the caller's responsibility (we do not deduplicate).
 
 **Not sending one is fine.** aistack generates a 16-hex id (e.g.
-`825e53134e178cd1`) and returns it in the response header — clients
+`825e53134e178cd1`) and returns it in the response header. Clients
 that just want to log "the id aistack assigned" only need to read
-the response header, no request-side change.
+the response header — no request-side change.
 
 ### When stitching pays off
 
 Skip it if:
-* one process talks to aistack and never correlates across systems
-* requests are inherently distinguishable by timestamp + endpoint
+
+- One process talks to aistack and never correlates across systems.
+- Requests are inherently distinguishable by timestamp + endpoint.
 
 Add it when:
-* a long pipeline (transcribe → LLM → TTS) needs end-to-end debugging
-* slow/failing requests need to be traced from VideoCraft's logs into
-  aistack's access log + payload dir without timestamp guessing
-* multiple clients share one aistack instance and you need to
-  attribute traffic
 
-## /admin/api/metrics — JSON shape
+- A long pipeline (transcribe → LLM → TTS) needs end-to-end
+  debugging.
+- Slow / failing requests need to be traced from VideoCraft's logs
+  into aistack's access log + payload dir without timestamp
+  guessing.
+- Multiple clients share one aistack instance and you need to
+  attribute traffic.
 
-```json
-{
-  "uptime_sec": 3601.2,
-  "window_sec": 3600,
-  "categories": {
-    "asr": {
-      "total": 142,
-      "by_class": {"2xx": 138, "4xx": 1, "5xx": 0,
-                   "503-busy": 3, "client-disconnect": 0},
-      "error_count": 1,
-      "error_rate": 0.007,
-      "slot_503": 3,
-      "disconnected": 0,
-      "throughput_per_min": 2.3,
-      "latency_ms": {
-        "p50": 480.0, "p95": 2100.0, "p99": 9800.0, "max": 12030.0,
-        "samples": 142,
-        "histogram": {"<=10":0,"<=25":0,"<=50":0,"<=100":12, ...}
-      },
-      "slot_wait_ms": {
-        "p50": 0.0, "p95": 12.0, "p99": 340.0, "samples": 142
-      },
-      "recent": [
-        {"ts": 1715000000.123, "request_id": "a1b2c3d4e5f6a7b8",
-         "status": 200, "class": "2xx", "latency_ms": 480.4,
-         "slot_wait_ms": 0.0,
-         "extra": {"audio_sec": 12.5, "rtf": 0.04, "model": "..."}}
-      ]
-    }
-  }
-}
-```
+## Status class taxonomy (why `503-busy` is its own bucket)
 
-`status_class` taxonomy:
+The metrics counters split each capability's traffic into five
+classes:
 
-| Class | Meaning |
-|---|---|
-| `2xx` | success |
-| `4xx` | client error (validation, unknown model) |
-| `5xx` | server error (provider crash, upstream down) |
-| `503-busy` | GPU slot rejection — load shedding, **not** counted as error |
-| `client-disconnect` | client closed connection mid-request |
+- `2xx` — success.
+- `4xx` — client error (validation, unknown model).
+- `5xx` — server error (provider crash, upstream down).
+- `503-busy` — GPU slot rejection. **Load shedding is not an error.**
+  A healthy gateway under load returns `503-busy` *because the system
+  is doing its job*. Counting it as `5xx` would make a healthy gateway
+  look broken whenever traffic spikes.
+- `client-disconnect` — client closed connection mid-request. Also
+  not an error — the request was abandoned by the caller.
 
-## Access log JSONL fields
+`error_rate` in the metrics snapshot is `(4xx + 5xx) / total` —
+load shedding and disconnects deliberately excluded.
 
-```json
-{"ts":"2026-05-08T10:23:45.123+00:00","request_id":"a1b2c3d4e5f6a7b8",
- "method":"POST","path":"/v1/audio/transcriptions","query":null,
- "status":200,"category":"asr","model":"iic/SenseVoiceSmall",
- "latency_ms":482.4,"slot_wait_ms":0.0,
- "client":"127.0.0.1:51234",
- "extra":{"audio_sec":12.5,"rtf":0.04,"language":"en",
-          "provider":"sensevoice","stream":false,
-          "response_format":"json","request_audio_bytes":234567,
-          "detected_language":"en"}}
-```
+## Payload scrubbing — what's safe, what's not
 
-Files roll daily by UTC date. Writer is a single background thread —
-overflow drops records (warned once) so disk wedging never blocks
-inference.
+When `payload` is on, every request and response body persists to
+disk. Two things to know:
 
-## Payload capture layout
+- **Headers are scrubbed** in the per-request `meta.json`:
+  `Authorization`, `Cookie`, `X-Api-Key`, `Proxy-Authorization`
+  are replaced with `***`.
+- **Bodies are NOT scrubbed.** Payload capture is opt-in and
+  intended for trusted-environment diagnostics only. If your
+  request body contains PII, do not turn this on in production.
 
-```
-<PAYLOAD_DIR>/2026-05-08/a1b2c3d4e5f6a7b8/
-    meta.json     route, headers (Authorization redacted), status, timing
-    req.bin       request body (mp3 / wav / json — original bytes)
-    resp.bin      response body (json / audio bytes; truncated if huge)
-```
+The on-disk sweeper (runs at startup and every 30 min) drops:
 
-`meta.json` is the single source of truth for what those binary
-files contain — it includes the `Content-Type` of both directions.
+1. Capture dirs older than `AISTACK_OBS_PAYLOAD_MAX_DAYS` (default 7).
+2. Then while total > `AISTACK_OBS_PAYLOAD_MAX_GB` (default 5),
+   the oldest survivors.
 
-The sweeper runs at startup and every 30 min:
-
-1. drop dirs older than `PAYLOAD_MAX_DAYS`
-2. while total > `PAYLOAD_MAX_BYTES`, drop oldest
-
-Sensitive request headers (`Authorization`, `Cookie`, `X-Api-Key`,
-`Proxy-Authorization`) are replaced with `***` in `meta.json`. The
-request body itself is **not** scrubbed — payload capture is opt-in
-and intended for trusted-environment diagnostics only.
+Order matters — the age cut runs before the size cut, so a
+1-day-old big request is preferred over a 6-day-old small one when
+budgeting disk.
 
 ## Long-term analysis recipes
 
 ```bash
-# slow ASR requests last 24h
+# Slow ASR requests in the last 24 h
 jq 'select(.category=="asr" and .latency_ms > 1000)' logs/access-2026-05-08.jsonl
 
-# error rate per model
+# Error rate per LLM model
 jq -r 'select(.category=="llm") | [.model, .status] | @tsv' logs/*.jsonl \
     | sort | uniq -c
 
-# mean RTF for SenseVoice over a day
+# Mean RTF for SenseVoice over a day
 jq -r 'select(.extra.provider=="sensevoice") | .extra.rtf' logs/access-2026-05-08.jsonl \
     | awk '{s+=$1;n++} END{print s/n}'
 
-# replay a captured request
+# Replay a captured request
 curl -X POST http://127.0.0.1:11500/v1/audio/transcriptions \
     -F file=@captures/2026-05-08/<rid>/req.bin \
     -F model=auto
@@ -211,16 +160,25 @@ curl -X POST http://127.0.0.1:11500/v1/audio/transcriptions \
 
 ## Performance overhead
 
-Measured on a hot path with all toggles default (`metrics`+`access_log` on,
-`payload` off):
+Measured on a hot path with all toggles default (`metrics` +
+`access_log` on, `payload` off):
 
-* metrics: ~5 µs/req (one dict update + one deque append)
-* access_log: ~10 µs/req (dict pickup + queue.put)
-* request id middleware: ~3 µs/req
+- metrics: ~5 µs/req (one dict update + one deque append).
+- access_log: ~10 µs/req (dict pickup + queue.put).
+- request-id middleware: ~3 µs/req.
 
-Total < 20 µs per request — invisible compared to ASR/LLM/TTS work
-which is in the 100s of milliseconds.
+Total < 20 µs per request — invisible compared to ASR / LLM / TTS
+work which is in the 100s of milliseconds.
 
 With `payload` on, overhead is dominated by disk IO of the request
 audio (often 100s of KB to several MB). Acceptable for diagnostics,
 not recommended for sustained high-throughput.
+
+## Why no Prometheus exporter
+
+aistack ships a JSON `/admin/api/metrics` endpoint, not OpenMetrics.
+Two reasons: (1) aistack is a single-host gateway, so a scraper +
+retention policy is overhead the rest of the architecture does not
+ask for; (2) the JSON shape is already what scripts and dashboards
+need. If a real Grafana ever ends up on the other end, adding a
+Prometheus exporter is an additive `/v1` change.

@@ -12,127 +12,129 @@ field level — clients written against OpenAI's `/v1/audio/speech` work
 unchanged. aistack proxies to the Qwen3-TTS-12Hz-0.6B-CustomVoice
 model running inside the `aistack-qwen3-tts` Docker container.
 
-## Request
+aistack adds **no business logic** at this layer; it is a transparent
+reverse proxy. Request body and response body flow through unchanged
+(minus hop-by-hop headers).
 
-`Content-Type: application/json`
+The full request and response schema lives in the auto-generated
+[TTS reference](./reference/tts/). For OpenAI-compatible field
+semantics (`input`, `voice`, `response_format`, `model`), the
+authoritative reference is OpenAI's
+[Audio API documentation](https://platform.openai.com/docs/api-reference/audio).
+This page covers the *why* — the transparent-proxy stance, output
+format quirks, the pass-through endpoint surface, cold-start
+behaviour, and how aistack does **not** arbitrate TTS concurrency.
 
-OpenAI-compatible fields:
+## Why a transparent proxy
 
-| Field | Required | Type | Description |
-|---|---|---|---|
-| `input` | yes | string | Text to synthesize. UTF-8. |
-| `voice` | yes | string | Voice id. Defaults: `vivian` (the model's pretrained voices include `vivian`, `dylan`, `aiden`, `eric`, `ono_anna`, `ryan`, ...). |
-| `response_format` | no | string | `"wav"` (effective default; vLLM-Omni emits 24 kHz mono PCM WAV regardless of this hint right now). |
-| `model` | no | string | Currently the upstream container serves a single model and rejects mismatched ids. Omit unless you need to target a specific model in a future multi-model deployment. |
+Three reasons aistack does not transform TTS requests/responses:
 
-Qwen3-TTS extension fields (not in OpenAI spec; aistack passes them
-through to vLLM-Omni):
+1. **OpenAI's contract is the contract.** Clients written for
+   OpenAI's TTS endpoint work unchanged against aistack. Adding
+   business logic in the middle would require keeping it in sync
+   with OpenAI's evolving spec — drift surface for no value.
+2. **The upstream owns the model.** Qwen3-TTS extension fields
+   (voice cloning, voice design, batched synthesis) are the
+   upstream's domain. aistack passes them through so consumers
+   reach the full feature set.
+3. **Audio is bytes, not JSON.** Transcoding (WAV → MP3, sample-rate
+   conversion) at the gateway would burn CPU and add latency for
+   every request. Clients that need a different format transcode
+   client-side with ffmpeg.
 
-| Field | Type | Description |
-|---|---|---|
-| `task_type` | string | `"CustomVoice"` (default) — pretrained voices. `"VoiceClone"` — clone from `ref_audio`. `"VoiceDesign"` — synthesize a voice per `instructions`. |
-| `language` | string | `"English"`, `"Chinese"`, etc. Free-form upstream string, not ISO 639-1. |
-| `instructions` | string | When `task_type=VoiceDesign`, describes the voice characteristics (timbre, age, emotion). |
-| `ref_audio` | string | When `task_type=VoiceClone`, a URL / base64 / `file://` path to the voice sample. |
-| `ref_text` | string | Transcript of `ref_audio` for VoiceClone alignment. |
-| `max_new_tokens` | int | Generation cap; clip excessively long output. |
+## Output format
 
-### Example
+Output is whatever vLLM-Omni emits — at the time of writing,
+**24 kHz mono 16-bit PCM WAV** regardless of the `response_format`
+hint in the request. The vLLM-Omni server may add MP3/Opus/FLAC
+encoding in a future release; aistack will pass that through
+without code changes.
+
+If you need a specific format today, transcode client-side:
 
 ```bash
-curl -X POST http://127.0.0.1:11500/v1/audio/speech \
-     -H "Content-Type: application/json" \
-     -d '{
-           "input": "Hello world from aistack",
-           "voice": "vivian",
-           "task_type": "CustomVoice",
-           "language": "English"
-         }' \
-     --output out.wav
+ffmpeg -i out.wav -codec:a libmp3lame out.mp3
 ```
 
-## Response
+## Pass-through endpoint surface
 
-```http
-HTTP/1.1 200 OK
-Content-Type: audio/wav
-```
+The full Qwen3-TTS extended surface is reachable through aistack
+under `/v1/audio/*`:
 
-Raw audio bytes. The body is the entire WAV file (RIFF header + PCM
-samples) — `/v1/audio/speech` itself is non-streaming.
+- `POST /v1/audio/speech` — synthesis (custom voice / cloned voice / designed voice)
+- `POST /v1/audio/speech/stream` — streaming synthesis (chunks audio as it generates)
+- `POST /v1/audio/speech/batch` — batched synthesis
+- `GET /v1/audio/voices` — list available voices
+- `POST /v1/audio/voices` — register a new voice
+- `DELETE /v1/audio/voices/{name}` — remove a registered voice
 
-Streaming synthesis is reachable through the proxy via vLLM-Omni's
-`/v1/audio/speech/stream` endpoint (see *Pass-through endpoints*
-below). The TTS entry in [`/v1/models`](models.md) advertises
-`supports_streaming: true` because of this pass-through path; the
-streaming wire format is whatever vLLM-Omni emits there (chunked
-audio bytes), not the `transcript.text.delta` SSE shape used by ASR.
-
-aistack does not transcode. Output is whatever vLLM-Omni emits — at
-the time of writing, **24 kHz mono 16-bit PCM WAV** regardless of the
-`response_format` hint. If you need MP3 or another container, transcode
-client-side with ffmpeg.
-
-## Pass-through endpoints
-
-The full Qwen3-TTS extended surface is reachable via aistack:
-
-| Path | Purpose |
-|---|---|
-| `POST /v1/audio/speech` | Standard / cloned / instructed synthesis (this doc) |
-| `POST /v1/audio/speech/stream` | Streaming synthesis — chunks audio as it generates |
-| `POST /v1/audio/speech/batch` | Batched synthesis (multiple inputs per request) |
-| `GET  /v1/audio/voices` | List available voices |
-| `POST /v1/audio/voices` | Register a new voice |
-| `DELETE /v1/audio/voices/{name}` | Remove a registered voice |
-
-aistack proxies these paths verbatim — request body and response are
-untouched. Refer to the [vLLM-Omni Qwen3-TTS docs](https://github.com/QwenLM/Qwen3-TTS)
-for their full schemas. Future aistack versions may add value-added
-behavior at this layer (telemetry, voice-list aggregation across
+aistack proxies all of these verbatim. Their schemas are owned by
+[vLLM-Omni's Qwen3-TTS docs](https://github.com/QwenLM/Qwen3-TTS);
+aistack does not redocument them. Future aistack versions may add
+value-added behaviour (telemetry, voice-list aggregation across
 multi-backend deployments) without changing the over-the-wire format.
+
+The `/v1/models` entry for TTS advertises `supports_streaming: true`
+because of the `/v1/audio/speech/stream` pass-through path; the
+streaming wire format is whatever vLLM-Omni emits there (chunked
+audio bytes), **not** the `transcript.text.delta` SSE shape used by
+ASR.
 
 ## Cold start
 
 The first request to a freshly started Docker container triggers
 `torch.compile` + CUDA Graph capture inside vLLM-Omni — this takes
-~60 to ~150 seconds depending on the request and machine state. The
-proxy timeout is set to **600 seconds** to absorb the worst case;
-clients should display "warming up" rather than treating long latency
-as a hang.
+**~60 to ~150 seconds** depending on the request and machine state.
+The proxy timeout is set to 600 seconds to absorb the worst case;
+clients should display "warming up" rather than treating long
+latency as a hang.
 
 After warmup, steady-state latency on RTX 4060 Laptop is typically
-RTF 0.7-1.1 (a few hundred milliseconds for a short utterance).
+RTF 0.7–1.1 (a few hundred milliseconds for a short utterance).
 
 ## Concurrency
 
+aistack **does** apply the single global GPU slot to TTS requests:
+the Qwen3-TTS container shares the physical GPU with in-process ASR
+and the LLM proxy, and the slot represents "GPU is doing inference"
+regardless of which process owns the kernels. Concurrent requests
+across capabilities get HTTP 503 with `Retry-After`.
+
 vLLM-Omni handles its own request queueing inside the Docker
-container. aistack does **not** apply the single-task GPU lock to
-TTS — TTS work happens in a separate process with a separate CUDA
-context, so blocking it at the gateway layer would just delay
-requests for no benefit. If both ASR and TTS run concurrently on
-the same physical GPU, they coexist or contend at the driver level;
-aistack does not arbitrate.
+container. aistack does not implement a queue at the gateway layer
+— if you want a queue, build it client-side around the busy signal.
 
-## Error scenarios
+## Recovery from container down
 
-All errors use the standard envelope from [errors.md](errors.md).
+The most common failure mode is "Docker container is not running":
 
-| HTTP | `kind` | Cause |
-|---|---|---|
-| 400 | `malformed` | Empty `input`, invalid `voice` for the active model, malformed `ref_audio` URL |
-| 503 | `network` | Qwen3-TTS Docker container not running. Recover with `docker compose -f docker/tts_qwen3/docker-compose.yml up -d`. |
-| 502 | `unknown` | vLLM-Omni returned a non-200 we could not decode |
-| 504 | `network` | Cold-start exceeded the 600s read timeout — the engine is in a stuck state. Restart the container. |
+```http
+HTTP/1.1 503 Service Unavailable
+Content-Type: application/json
+
+{
+  "error": {
+    "kind": "network",
+    "provider": "aistack",
+    "message": "Qwen3-TTS container is not reachable. Start it with: docker compose -f docker/tts_qwen3/docker-compose.yml up -d"
+  }
+}
+```
+
+The error message includes the recovery command. Containers that
+crash mid-cold-start can wedge in a state where requests time out at
+the proxy's 600 s read timeout — restart the container in that case.
 
 ## Stability
 
-The OpenAI-compatible field layer (`input`, `voice`, `response_format`,
-`model`) is stable within `/v1`. The Qwen3-TTS extension fields
-(`task_type`, `language`, `ref_audio`, ...) are documented as a
-stable contract for the duration that aistack ships Qwen3-TTS as the
-TTS backend; if a future TTS backend exposes a different surface,
-aistack will normalize but the extension-field set may change.
+The OpenAI-compatible field layer (`input`, `voice`,
+`response_format`, `model`) is stable within `/v1`. The Qwen3-TTS
+extension fields (`task_type`, `language`, `ref_audio`, ...) are
+the upstream's contract and are documented authoritatively in the
+[vLLM-Omni Qwen3-TTS repo](https://github.com/QwenLM/Qwen3-TTS).
 
-The pass-through endpoints (`/v1/audio/speech/stream`, `/voices`, ...)
-follow vLLM-Omni's contract and are subject to upstream changes.
+The pass-through endpoint paths (`/v1/audio/speech/stream`,
+`/voices`, ...) follow vLLM-Omni's contract; if a future TTS
+backend exposes a different surface, aistack will document the
+mapping in a separate migration note rather than silently rewrite
+the contract.
