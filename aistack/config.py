@@ -75,8 +75,8 @@ def _env_float(name: str, default: float) -> float:
 @dataclass(frozen=True)
 class ModelCacheConfig:
     """Idle eviction policy for the global model cache."""
-    keep_alive_sec: float
-    scan_interval_sec: float
+    keep_alive_sec: float       # idle seconds before a loaded model is unloaded
+    scan_interval_sec: float    # how often the eviction sweeper runs
 
     @classmethod
     def from_env(cls) -> "ModelCacheConfig":
@@ -91,12 +91,12 @@ class ModelCacheConfig:
 @dataclass(frozen=True)
 class ParakeetConfig:
     """Attention mode + long-audio chunking knobs for Parakeet TDT."""
-    attention_mode: str           # 'local' | 'full'
-    att_context_size: str         # '<left>,<right>' frames at 80 ms each
-    chunk_disable: bool
-    chunk_window_sec: float       # default 720 = 12 min
-    chunk_overlap_sec: float      # default 120 = 2 min
-    chunk_min_last_sec: float     # default 300 = 5 min — tail-merge floor
+    attention_mode: str           # 'local' = O(N) memory; 'full' = O(N²), OOMs on 8 GB cards past ~2-3 min
+    att_context_size: str         # local-attention left/right context, '<left>,<right>' frames at 80 ms each
+    chunk_disable: bool            # set true to feed audio whole — useful on big GPUs that don't need chunking
+    chunk_window_sec: float       # length of each chunk in seconds (default 720 = 12 min)
+    chunk_overlap_sec: float      # seconds shared between adjacent chunks (default 120 = 2 min)
+    chunk_min_last_sec: float     # if the natural last chunk is shorter than this, merge it into the previous
 
     @classmethod
     def from_env(cls) -> "ParakeetConfig":
@@ -115,8 +115,8 @@ class ParakeetConfig:
 @dataclass(frozen=True)
 class BackendsConfig:
     """Where local LLM / TTS daemons live."""
-    ollama_url: str
-    qwen3_tts_upstream: str
+    ollama_url: str            # base URL of the local Ollama daemon for /v1/chat/completions
+    qwen3_tts_upstream: str    # base URL of the vLLM-Omni Qwen3-TTS container for /v1/audio/*
 
     @classmethod
     def from_env(cls) -> "BackendsConfig":
@@ -151,15 +151,15 @@ class ObservabilityConfig:
     state is in `aistack.observability.config` because admin POST flips
     it at runtime.
     """
-    metrics_default: bool
-    access_log_default: bool
-    payload_default: bool
-    log_dir: Path
-    payload_dir: Path
-    payload_max_bytes: int
-    payload_max_days: int
-    payload_resp_max_bytes: int
-    metrics_window_sec: int
+    metrics_default: bool       # boot-time default for the metrics toggle (rolling histograms; ~5 µs/req)
+    access_log_default: bool    # boot-time default for the access_log toggle (one JSONL line per request)
+    payload_default: bool       # boot-time default for the payload toggle (request/response bytes to disk; off by default — bytes are large + may be sensitive)
+    log_dir: Path               # directory where the daily-rolling access JSONL is written
+    payload_dir: Path           # directory where per-request capture trees live (one dir per request id)
+    payload_max_bytes: int      # total disk budget for payload capture (oldest-first sweep when exceeded)
+    payload_max_days: int       # age budget for payload capture in days (older trees deleted)
+    payload_resp_max_bytes: int # per-response cap for streaming bodies; over-cap responses save metadata only
+    metrics_window_sec: int     # rolling window the metrics percentiles cover (in seconds)
 
     @classmethod
     def from_env(cls) -> "ObservabilityConfig":

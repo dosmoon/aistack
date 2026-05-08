@@ -29,7 +29,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(here, '..', '..');
 const SRC = resolve(REPO_ROOT, 'docs', 'public');
 const DEST = resolve(here, '..', 'src', 'content', 'docs');
-const GEN_SCRIPT = resolve(REPO_ROOT, 'scripts', 'gen_api_reference.py');
+const GEN_SCRIPTS = [
+  resolve(REPO_ROOT, 'scripts', 'gen_api_reference.py'),
+  resolve(REPO_ROOT, 'scripts', 'gen_config_reference.py'),
+];
 
 async function copyTree(src, dest) {
   const entries = await readdir(src, { withFileTypes: true });
@@ -46,32 +49,37 @@ async function copyTree(src, dest) {
   }
 }
 
-function runGenerator() {
-  // Skip the regenerate step gracefully when the script is missing,
-  // when Python is not on PATH (e.g. CI without Python set up), or
-  // when AISTACK_SKIP_API_GEN=1 is set (offline / quick-iter dev).
-  if (!existsSync(GEN_SCRIPT)) {
-    console.warn(`[sync-docs] generator missing: ${GEN_SCRIPT} — skipping`);
-    return;
-  }
-  if (process.env.AISTACK_SKIP_API_GEN === '1') {
-    console.log('[sync-docs] AISTACK_SKIP_API_GEN=1 — skipping API reference regen');
+function runOneGenerator(script) {
+  // Try a sequence of Python interpreters; first one that runs (exit
+  // 0) wins. If all fail (no Python on PATH, missing aistack venv,
+  // etc.), warn and continue — the markdown checked into the repo at
+  // docs/public/<...>/ is the fallback.
+  if (!existsSync(script)) {
+    console.warn(`[sync-docs] generator missing: ${script} — skipping`);
     return;
   }
   const candidates = process.env.AISTACK_PYTHON
     ? [process.env.AISTACK_PYTHON]
     : ['python', 'python3', 'py'];
   for (const exe of candidates) {
-    const result = spawnSync(exe, [GEN_SCRIPT], {
+    const result = spawnSync(exe, [script], {
       cwd: REPO_ROOT,
       stdio: 'inherit',
     });
     if (result.error && result.error.code === 'ENOENT') continue;
     if (result.status === 0) return;
-    console.warn(`[sync-docs] ${exe} ${GEN_SCRIPT} exited with status ${result.status}`);
+    console.warn(`[sync-docs] ${exe} ${script} exited with status ${result.status}`);
     return;
   }
-  console.warn('[sync-docs] could not locate a Python interpreter; skipping API reference regen');
+  console.warn(`[sync-docs] could not locate a Python interpreter for ${script}`);
+}
+
+function runGenerator() {
+  if (process.env.AISTACK_SKIP_API_GEN === '1') {
+    console.log('[sync-docs] AISTACK_SKIP_API_GEN=1 — skipping reference regen');
+    return;
+  }
+  for (const script of GEN_SCRIPTS) runOneGenerator(script);
 }
 
 async function main() {
