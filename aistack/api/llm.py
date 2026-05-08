@@ -18,9 +18,9 @@ Streaming responses (`stream=true`) are forwarded chunk-by-chunk via
 FastAPI StreamingResponse so the client sees first tokens as soon as
 Ollama emits them.
 
-Errors are wrapped in the standard envelope (see aistack/errors.py
-and docs/public/api/errors.md). Connection-refused on Ollama maps to
-`network` kind with an actionable message.
+Errors are wrapped in the standard envelope shape — see
+aistack.errors. Connection-refused on Ollama maps to `network` kind
+with an actionable message.
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from aistack import _gpu_lock, _model_cache
 from aistack import observability as obs
+from aistack.api._schemas import ErrorEnvelope
 from aistack.backends.llm import ollama as ollama_backend
 
 logger = logging.getLogger("aistack.api.llm")
@@ -58,9 +59,82 @@ def _evict_asr_for_llm() -> None:
         logger.info("evicted %d ASR main model(s) before LLM forward", n)
 
 
-@router.post("/v1/chat/completions")
+@router.post(
+    "/v1/chat/completions",
+    summary="Chat completion (Ollama proxy)",
+    response_model=None,  # Pass-through Ollama JSON / SSE; documented via responses below.
+    responses={
+        200: {
+            "description": (
+                "Ollama's response, forwarded verbatim. Schema follows OpenAI's "
+                "`/v1/chat/completions` contract — see "
+                "https://platform.openai.com/docs/api-reference/chat for the "
+                "field reference. When `stream=true` in the request, the "
+                "response is a Server-Sent Events stream of OpenAI-shape "
+                "delta chunks terminated by `data: [DONE]`."
+            ),
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "type": "object",
+                        "description": "Non-streaming response. Pass-through OpenAI chat-completion shape.",
+                    },
+                },
+                "text/event-stream": {
+                    "schema": {
+                        "type": "string",
+                        "description": "Streaming response (when stream=true). SSE chunks of OpenAI-shape deltas.",
+                    },
+                },
+            },
+        },
+        400: {"model": ErrorEnvelope, "description": "Request body is not valid JSON."},
+        502: {"model": ErrorEnvelope, "description": "Ollama upstream produced an unexpected error."},
+        503: {
+            "model": ErrorEnvelope,
+            "description": (
+                "Either the GPU slot is busy serving another inference (gateway-level), "
+                "or Ollama is unreachable (e.g. the daemon is not running). The error "
+                "envelope's `provider` field distinguishes the two."
+            ),
+        },
+    },
+)
 async def chat_completions(request: Request) -> Response:
-    """Forward an OpenAI-compatible chat-completion call to Ollama."""
+    """OpenAI-compatible chat completion endpoint, reverse-proxied to a
+    local Ollama daemon (default `http://127.0.0.1:11434`).
+
+    **Value-adds over a direct Ollama call.** Two things happen between
+    the client and the upstream that justify routing through aistack:
+
+    1. **GPU scheduling.** Before forwarding, aistack evicts its own
+       in-process ASR `asr-main` cache entries so the LLM inference
+       does not contend with a hot Whisper/Parakeet/SenseVoice for
+       VRAM. The whole call holds the gateway's single GPU slot, so
+       concurrent LLM/ASR/TTS requests get HTTP 503 with `Retry-After`.
+
+    2. **`keep_alive` default.** When the client omits the
+       `keep_alive` field, aistack injects `"30s"` so Ollama releases
+       the model shortly after the completion. Sequential LLM calls
+       within that window reuse the loaded model; idle releases VRAM
+       back for ASR. Clients that want a different lifetime override
+       explicitly.
+
+    **Streaming.** When `stream=true` the response is forwarded
+    chunk-by-chunk via FastAPI StreamingResponse, so the client sees
+    first tokens as soon as Ollama emits them. Client disconnect
+    propagates: aistack closes the upstream connection so Ollama's
+    runner can abort generation rather than running to completion on
+    a dead socket.
+
+    **Cancellation.** Client disconnect mid-stream releases the GPU
+    slot promptly and aborts the upstream call.
+
+    **Request schema.** OpenAI-compatible — see the OpenAI Chat
+    Completion API reference for field semantics. aistack does not
+    transform the request body except to inject the `keep_alive`
+    default; it forwards every other field verbatim.
+    """
     obs_state = obs.state_for(request)
     try:
         body_bytes = await request.body()
