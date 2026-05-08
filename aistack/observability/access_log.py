@@ -6,10 +6,15 @@ hot path off the disk.
 
 File naming: <LOG_DIR>/access-YYYY-MM-DD.jsonl  (UTC).
 
-Fields are documented in docs/public/api/observability.md. The writer never
-raises into the request thread: queue.put() is non-blocking and a full
-queue silently drops records (with a one-shot warning) so a wedged
-disk doesn't take down inference.
+The wire-format authority for each line is the `AccessLogRecord`
+Pydantic schema in `aistack.api._schemas` — that schema documents
+every field, its meaning, and which routes populate which extras.
+The producer is `aistack.observability.middleware.ObservabilityMiddleware`,
+which constructs the dict and calls `write()` below.
+
+The writer never raises into the request thread: `queue.put()` is
+non-blocking and a full queue silently drops records (with a one-shot
+warning) so a wedged disk doesn't take down inference.
 """
 from __future__ import annotations
 

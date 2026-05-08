@@ -1,6 +1,6 @@
 """In-process metrics: rolling latency histograms + counters.
 
-Per category (asr / llm / tts / other) we keep:
+Per category (asr / llm / tts) we keep:
   - total request count, broken down by status_class
   - latency_ms samples (rolling window — METRICS_WINDOW_SEC)
   - slot_wait_ms samples (rolling window)
@@ -13,8 +13,9 @@ We do not depend on prometheus_client — three reasons:
   3. rolling window beats process-lifetime counters for "is performance
      regressing right now"
 
-snapshot() is called by /admin/api/metrics and the metrics dashboard
-fragment; it returns a JSON-serialisable dict.
+`snapshot()` is called by /admin/api/metrics and the metrics dashboard
+fragment; it returns a JSON-serialisable dict whose authoritative shape
+is the `MetricsSnapshot` Pydantic model in `aistack.api._schemas`.
 
 status_class taxonomy:
     "2xx" — success
@@ -166,7 +167,34 @@ def record(
 
 
 def snapshot() -> dict[str, Any]:
-    """JSON-serialisable snapshot for /admin/api/metrics."""
+    """JSON-serialisable snapshot for `GET /admin/api/metrics`.
+
+    The wire-format authority is the `MetricsSnapshot` Pydantic schema
+    in `aistack.api._schemas`. The shape is:
+
+        {
+          "uptime_sec":  float,    # process uptime
+          "window_sec":  int,      # rolling-window duration
+          "categories": {
+              "<asr|llm|tts>": {   # only categories with traffic
+                  "total":              int,
+                  "by_class":           {<status_class>: count, ...},
+                  "error_count":        int,
+                  "error_rate":         float,
+                  "slot_503":           int,
+                  "disconnected":       int,
+                  "throughput_per_min": float,
+                  "latency_ms":         {p50, p95, p99, max, samples, histogram},
+                  "slot_wait_ms":       {p50, p95, p99, samples},
+                  "recent":             [<last 50 sample dicts>],
+              },
+              ...
+          }
+        }
+
+    Caller is responsible for serialising to JSON; this function
+    returns plain Python types.
+    """
     with _LOCK:
         out: dict[str, Any] = {
             "uptime_sec": round(time.monotonic() - _STARTED_AT, 1),

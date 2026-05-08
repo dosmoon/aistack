@@ -209,3 +209,111 @@ class HealthResponse(BaseModel):
 
     status: Literal["ok"] = Field(description="Always 'ok' when this endpoint responds. Connection refused / non-200 means the gateway is down.")
     version: str = Field(description="aistack package version (PEP 440).", examples=["0.0.1"])
+
+
+# ── Observability ───────────────────────────────────────────────────────────
+
+class AccessLogRecord(BaseModel):
+    """One line of the JSONL access log (`<LOG_DIR>/access-YYYY-MM-DD.jsonl`).
+
+    Every observed HTTP request appends one of these to today's log.
+    The category filter in `aistack.observability.middleware._category_for`
+    keeps `/health` / `/v1/models` / `/admin/*` out of the log so it
+    doesn't drown in noise.
+    """
+
+    ts: str = Field(description="ISO 8601 timestamp (UTC, millisecond precision) of when the response completed.")
+    request_id: str = Field(description="Short hex correlation id, also returned to the client as the X-Request-ID header.")
+    method: str = Field(description="HTTP method.", examples=["POST", "GET"])
+    path: str = Field(description="Request path (no query string).", examples=["/v1/audio/transcriptions"])
+    query: str | None = Field(default=None, description="Query string without the leading '?', or null if absent.")
+    status: int = Field(description="HTTP status code returned to the client.")
+    category: Literal["asr", "llm", "tts"] = Field(
+        description="Capability category, derived from path prefix.",
+    )
+    model: str | None = Field(default=None, description="Canonical model id served by the request (when known).")
+    latency_ms: float = Field(description="End-to-end request duration in milliseconds, measured at the ASGI layer.")
+    slot_wait_ms: float = Field(description="Time spent waiting on the global GPU slot before the inference started, in ms. Zero if not measured.")
+    client: str | None = Field(default=None, description="Client address as 'ip:port', or null if not exposed by ASGI.")
+    extra: dict | None = Field(
+        default=None,
+        description="Per-route extras (e.g. ASR audio_sec / language / response_format / segment_granularity; LLM message_count / stream).",
+    )
+
+
+class MetricsLatencyStats(BaseModel):
+    """Latency distribution for one capability category."""
+
+    p50: float = Field(description="50th percentile (median) latency in milliseconds.")
+    p95: float = Field(description="95th percentile latency in milliseconds.")
+    p99: float = Field(description="99th percentile latency in milliseconds.")
+    max: float = Field(description="Maximum observed latency in milliseconds within the rolling window.")
+    samples: int = Field(description="Number of samples in the rolling window the percentiles were computed from.")
+    histogram: dict[str, int] = Field(
+        description="Coarse histogram with power-of-2 buckets (`<=10`, `<=25`, ... `<=60000`, `>60000`). Counts samples per bucket.",
+    )
+
+
+class MetricsSlotWaitStats(BaseModel):
+    """GPU-slot wait distribution for one capability category."""
+
+    p50: float = Field(description="50th percentile slot wait in milliseconds.")
+    p95: float = Field(description="95th percentile slot wait in milliseconds.")
+    p99: float = Field(description="99th percentile slot wait in milliseconds.")
+    samples: int = Field(description="Number of recorded slot waits in the rolling window.")
+
+
+class MetricsRecentSample(BaseModel):
+    """One entry in the per-category rolling tail of recent requests.
+
+    Capped at the last 50 samples per category. Useful for spot-checks
+    of "what just happened" without sifting the full access log.
+    """
+
+    ts: float = Field(description="Unix timestamp (seconds, with sub-second precision) of when the request completed.")
+    request_id: str | None = Field(default=None, description="Short hex correlation id (matches the access log entry).")
+    status: int = Field(description="HTTP status code returned to the client.")
+    class_: Literal["2xx", "4xx", "5xx", "503-busy", "client-disconnect"] = Field(
+        alias="class",
+        description=(
+            "Status class. '503-busy' is load-shedding (slot mutex rejection — counted separately so a busy gateway "
+            "doesn't look broken). 'client-disconnect' is informational, not an error."
+        ),
+    )
+    latency_ms: float = Field(description="End-to-end request duration in milliseconds.")
+    slot_wait_ms: float = Field(description="Time waiting for the GPU slot in milliseconds.")
+    extra: dict = Field(description="Per-request extras (model id, audio_sec, etc.). Free-form.")
+
+
+class MetricsCategorySnapshot(BaseModel):
+    """Rolling-window metrics for one capability category (asr / llm / tts)."""
+
+    total: int = Field(description="Total requests counted in this category since process start (not windowed).")
+    by_class: dict[str, int] = Field(
+        description="Counts per status_class. Keys: 2xx / 4xx / 5xx / 503-busy / client-disconnect.",
+    )
+    error_count: int = Field(description="4xx + 5xx count. Excludes 503-busy and client-disconnect.")
+    error_rate: float = Field(description="error_count / total. 0.0 when total is 0.")
+    slot_503: int = Field(description="Count of 503 responses caused by GPU slot contention (load-shedding).")
+    disconnected: int = Field(description="Count of requests aborted by client disconnect mid-flight.")
+    throughput_per_min: float = Field(description="Approximate requests-per-minute over the rolling window.")
+    latency_ms: MetricsLatencyStats
+    slot_wait_ms: MetricsSlotWaitStats
+    recent: list[MetricsRecentSample] = Field(
+        description="Last ≤50 requests in this category, newest last.",
+    )
+
+
+class MetricsSnapshot(BaseModel):
+    """Response shape for `GET /admin/api/metrics`.
+
+    Built by `aistack.observability.metrics.snapshot()`. Stable across
+    `/v1` — adding new categories or new top-level keys is allowed,
+    renaming or removing requires a version bump.
+    """
+
+    uptime_sec: float = Field(description="Process uptime in seconds.")
+    window_sec: int = Field(description="Rolling window duration the percentiles are computed over.")
+    categories: dict[str, MetricsCategorySnapshot] = Field(
+        description="Per-capability metrics. Keys: 'asr', 'llm', 'tts' (only those that received traffic since startup).",
+    )
