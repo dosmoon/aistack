@@ -56,3 +56,10 @@ bench/.videocraft/
 
 # Claude Code session/agent local state — per-developer, not project state
 .claude/
+
+# Starlight build artifact: sync-docs.mjs writes docs/public/** into here
+# before each `astro build`. Source of truth lives at docs/public/.
+site/src/content/docs/
+site/dist/
+site/node_modules/
+site/.astro/
