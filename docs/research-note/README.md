@@ -37,6 +37,7 @@ aistack 这一年多调过的"上游没写的实情"在累积——尤其是消�
 | [consumer-gpu-asr-baseline.md](consumer-gpu-asr-baseline.md) | 消费级 GPU 跑 ASR 的实测基线：50 分钟英文音频 / RTX 4060 8GB / 62s 端到端 / RTF 0.021。读者拿这数据自行决定本地 ASR 是否适合自己场景。 | 2026-05-07 |
 | [parakeet-on-consumer-gpu.md](parakeet-on-consumer-gpu.md) | NVIDIA Parakeet TDT 在 8 GB 卡上跑长音频的**可工作配置**：哪几个旋钮要开、哪几个不能碰、为什么 NVIDIA 官方文档没把这事说全。 | 2026-05-07 |
 | [aistack-positioning-and-product-paths.md](aistack-positioning-and-product-paths.md) | 为什么 aistack 必然是研发形态、不可能演化成终端用户产品；以及未来若做产品形态可行的几条路径（whisper.cpp 离线优先 / Docker 全家桶 / sherpa-onnx 多引擎）。**强项是定位判断，不是技术决策**——具体技术细节留到新仓库再展开。 | 2026-05-08 |
+| [whisper-translation-capability.md](whisper-translation-capability.md) | Whisper `task=translate` 的真实边界：**X→English only**，不能做 EN→ZH 或任何 non-English 目标翻译，paper §2.1 数据集决定的硬限制。需要 EN→ZH 字幕时三条可行路径（Whisper+LLM 级联 / SeamlessM4T / Qwen2-Audio）的对比与待实测项。 | 2026-05-08 |
 
 ## 风格约定
 
