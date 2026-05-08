@@ -27,6 +27,7 @@ from fastapi.templating import Jinja2Templates
 from aistack import _gpu_lock, _model_cache
 from aistack import asr as asr_pkg
 from aistack.admin import log_buffer
+from aistack.api._schemas import MetricsSnapshot
 from aistack.backends.llm import ollama as llm_ollama
 from aistack.observability import config as obs_config
 from aistack.observability import metrics as obs_metrics
@@ -147,14 +148,24 @@ async def fragment_observability(request: Request) -> HTMLResponse:
     )
 
 
-@router.post("/api/observability/toggle", response_class=HTMLResponse)
+@router.post(
+    "/api/observability/toggle",
+    response_class=HTMLResponse,
+    summary="Flip an observability toggle (live)",
+)
 async def api_observability_toggle(
     request: Request,
-    key: str = Form(...),
-    value: str = Form(...),
+    key: str = Form(..., description="Which toggle to flip. One of 'metrics' / 'access_log' / 'payload'."),
+    value: str = Form(..., description="Truthy ('1', 'on', 'true', 'yes', 'y') turns it on; anything else turns it off."),
 ) -> HTMLResponse:
-    """Flip one toggle. Returns the re-rendered observability fragment so
-    HTMX can swap it in without a separate fetch."""
+    """Flip one observability toggle in process memory.
+
+    Live-only — restart returns to env-var defaults
+    (`AISTACK_OBS_METRICS_ENABLED`, `AISTACK_OBS_ACCESS_LOG_ENABLED`,
+    `AISTACK_OBS_PAYLOAD_ENABLED`). Returns the re-rendered
+    observability HTMX fragment so the admin dashboard swaps it in
+    place without a separate fetch.
+    """
     enabled = value.strip().lower() in {"1", "on", "true", "yes", "y"}
     try:
         obs_config.set_enabled(key, enabled)
@@ -165,18 +176,45 @@ async def api_observability_toggle(
     )
 
 
-@router.post("/api/observability/clear-payload", response_class=HTMLResponse)
+@router.post(
+    "/api/observability/clear-payload",
+    response_class=HTMLResponse,
+    summary="Delete every captured request/response payload",
+)
 async def api_observability_clear_payload(request: Request) -> HTMLResponse:
+    """Wipe every payload-capture file under the configured payload
+    directory.
+
+    Useful between bench runs or when the on-disk usage approaches the
+    configured `AISTACK_OBS_PAYLOAD_MAX_GB` cap and you want to reclaim
+    immediately rather than wait for the size sweep. Returns the
+    re-rendered observability HTMX fragment.
+    """
     obs_payload.clear_all()
     return templates.TemplateResponse(
         request, "_observability.html", _observability_context(),
     )
 
 
-@router.get("/api/metrics")
+@router.get(
+    "/api/metrics",
+    summary="Rolling-window metrics snapshot",
+    response_model=MetricsSnapshot,
+    response_model_exclude_none=True,
+)
 async def api_metrics() -> JSONResponse:
-    """Machine-readable metrics snapshot. Same data the dashboard renders.
-    Stable JSON shape — see docs/public/api/observability.md for the schema."""
+    """Machine-readable metrics snapshot — same data the admin
+    dashboard's HTMX fragment renders.
+
+    Categorised per capability (asr / llm / tts) over a rolling time
+    window (default 60 minutes). Includes p50/p95/p99 latency, error
+    rates, GPU-slot wait distribution, and a tail of the last 50
+    samples per category for spot-checks. The full schema is the
+    `MetricsSnapshot` Pydantic model in `aistack.api._schemas`.
+
+    Restart loses the in-process samples; for cross-restart trend
+    analysis use the JSONL access log under `AISTACK_OBS_LOG_DIR`.
+    """
     return JSONResponse(obs_metrics.snapshot())
 
 
@@ -187,7 +225,11 @@ async def api_metrics() -> JSONResponse:
 _ASR_CACHE_CATEGORIES = ("asr-main", "asr-aux")
 
 
-@router.post("/api/reset-asr-state", response_model=None)
+@router.post(
+    "/api/reset-asr-state",
+    response_model=None,
+    summary="Drop loaded ASR weights from cache",
+)
 async def api_reset_asr_state(request: Request) -> HTMLResponse | JSONResponse:
     """Drop every ASR weight currently resident in the model cache.
 

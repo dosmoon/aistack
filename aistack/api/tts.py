@@ -5,7 +5,11 @@ the configured upstream backend (currently Qwen3-TTS via vLLM-Omni).
 
 The proxy is intentionally transparent: request body, headers (minus hop-by-hop),
 and response body all flow through unchanged. aistack adds no business logic
-at this layer in D2 — that is the responsibility of consumers like VideoCraft.
+at this layer — that is the responsibility of consumers like VideoCraft.
+
+The OpenAI-compatible request/response schemas are owned by OpenAI's API
+reference (https://platform.openai.com/docs/api-reference/audio); aistack
+forwards them verbatim and does not redocument the field semantics.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ from fastapi.responses import StreamingResponse
 
 from aistack import _gpu_lock
 from aistack import observability as obs
+from aistack.api._schemas import ErrorEnvelope
 from aistack.tts import qwen3
 
 logger = logging.getLogger("aistack.api.tts")
@@ -47,19 +52,107 @@ def _filter_response_headers(src: httpx.Headers) -> dict[str, str]:
     return {k: v for k, v in src.items() if k.lower() not in _HOP_BY_HOP}
 
 
-@router.api_route(
-    "/v1/audio/{path:path}",
-    methods=["GET", "POST", "DELETE"],
-)
-async def proxy(path: str, request: Request) -> Response:
-    """Transparent reverse proxy for /v1/audio/* to the TTS upstream.
+_TTS_PROXY_RESPONSES = {
+    200: {
+        "description": (
+            "Upstream Qwen3-TTS response, forwarded verbatim. For "
+            "`POST /v1/audio/speech` the body is raw audio bytes "
+            "(content-type per OpenAI spec); other paths under "
+            "`/v1/audio/*` (clone-voice / list-voices / etc.) preserve "
+            "the upstream's content-type and shape."
+        ),
+        "content": {
+            "audio/mpeg": {"schema": {"type": "string", "format": "binary"}},
+            "audio/wav": {"schema": {"type": "string", "format": "binary"}},
+            "audio/opus": {"schema": {"type": "string", "format": "binary"}},
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "description": "Non-audio responses (e.g. voice catalog), pass-through from Qwen3-TTS.",
+                },
+            },
+        },
+    },
+    502: {"model": ErrorEnvelope, "description": "Qwen3-TTS upstream produced an unexpected error."},
+    503: {
+        "model": ErrorEnvelope,
+        "description": (
+            "Either the GPU slot is busy serving another inference (gateway-level), "
+            "or the Qwen3-TTS container is unreachable. The error envelope's "
+            "`provider` field distinguishes the two."
+        ),
+    },
+}
 
-    Holds the global GPU slot for the duration of the upstream call.
-    Even though aistack does no in-process GPU work here, the Qwen3-TTS
-    container is generating on the same GPU as ASR/LLM workloads — the
-    slot represents "GPU is doing inference" regardless of which process
-    owns the kernels.
-    """
+
+_TTS_PROXY_DOC = """Transparent reverse proxy for /v1/audio/* to the
+Qwen3-TTS-12Hz-0.6B-CustomVoice container.
+
+**Transparent.** Request body, headers (minus hop-by-hop), and response
+body all flow through unchanged. aistack does not transcode audio,
+swap voices, or adapt OpenAI's spec — what Qwen3-TTS returns is what
+the client receives. The OpenAI-compatible request/response schemas
+are documented authoritatively at
+https://platform.openai.com/docs/api-reference/audio.
+
+**GPU scheduling.** Holds the global gateway GPU slot for the
+duration of the upstream call. The Qwen3-TTS container generates on
+the same physical GPU as in-process ASR / LLM workloads, so the slot
+represents "GPU is doing inference" regardless of which process owns
+the kernels. Concurrent requests get HTTP 503 with `Retry-After`.
+
+**Streaming.** The upstream is consumed and forwarded chunk-by-chunk
+so multi-MB audio responses don't buffer entirely in memory. Client
+disconnect propagates: aistack closes the upstream connection so the
+container can abort generation early.
+
+**Error mapping.** ConnectError on the upstream → 503 with a hint to
+start the docker compose stack. Other httpx errors → 502 with the
+upstream exception type/message in the envelope.
+"""
+
+
+@router.post(
+    "/v1/audio/{path:path}",
+    operation_id="tts_proxy_post",
+    summary="Proxy to Qwen3-TTS (POST)",
+    response_model=None,
+    responses=_TTS_PROXY_RESPONSES,
+)
+async def proxy_post(path: str, request: Request) -> Response:
+    return await _proxy(path, request)
+
+
+@router.get(
+    "/v1/audio/{path:path}",
+    operation_id="tts_proxy_get",
+    summary="Proxy to Qwen3-TTS (GET)",
+    response_model=None,
+    responses=_TTS_PROXY_RESPONSES,
+)
+async def proxy_get(path: str, request: Request) -> Response:
+    return await _proxy(path, request)
+
+
+@router.delete(
+    "/v1/audio/{path:path}",
+    operation_id="tts_proxy_delete",
+    summary="Proxy to Qwen3-TTS (DELETE)",
+    response_model=None,
+    responses=_TTS_PROXY_RESPONSES,
+)
+async def proxy_delete(path: str, request: Request) -> Response:
+    return await _proxy(path, request)
+
+
+# Attach the shared docstring to all three methods so /docs shows it
+# regardless of which method the reader inspects.
+proxy_post.__doc__ = _TTS_PROXY_DOC
+proxy_get.__doc__ = _TTS_PROXY_DOC
+proxy_delete.__doc__ = _TTS_PROXY_DOC
+
+
+async def _proxy(path: str, request: Request) -> Response:
     upstream_path = f"/v1/audio/{path}"
     body = await request.body()
     fwd_headers = _filter_request_headers(dict(request.headers))
