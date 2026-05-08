@@ -2,7 +2,7 @@
 title: HTTP API
 description: aistack's HTTP contract — ASR, TTS, LLM proxy, models inventory, errors, and observability.
 sidebar:
-  order: 0
+  order: 2
 ---
 
 # aistack HTTP API
@@ -19,12 +19,12 @@ may change without API version bumps.
 
 ## Two flavours of documentation in this section
 
-- **Narrative pages** (this page, [`integration`](./integration/),
-  [`asr`](./asr/), [`tts`](./tts/), [`llm`](./llm/),
-  [`models`](./models/), [`errors`](./errors/),
+- **Narrative pages** (this page, [`asr`](./asr/), [`tts`](./tts/),
+  [`llm`](./llm/), [`models`](./models/), [`errors`](./errors/),
   [`observability`](./observability/)) explain *why* the contract
   looks the way it does — design choices, integration journeys,
-  trade-offs.
+  trade-offs. The top-level [Integration Guide](../integration/)
+  stitches them into a coherent consumer journey.
 - **[Auto-generated reference](./reference/)** lists *what* every
   endpoint accepts and returns — request/response field tables,
   enum values, error codes, JSON schemas. The reference is generated
@@ -32,9 +32,9 @@ may change without API version bumps.
   cannot drift from the running code.
 
 If you are integrating aistack for the first time, start with the
-[Integration Guide](./integration/). When you need a specific field's
-type or an exhaustive list of error codes, jump to the
-[Reference](./reference/).
+top-level [Integration Guide](../integration/). When you need a
+specific field's type or an exhaustive list of error codes, jump to
+the [Reference](./reference/).
 
 ## Versioning policy
 
@@ -94,7 +94,7 @@ shape OpenAI uses for that capability (`transcript.text.delta` /
 LLM, raw audio chunks via vLLM-Omni's streaming endpoint for TTS).
 ASR adds an aistack `warning` event for the rare case where a
 selected model does not natively stream — see
-[`integration.md` §4](./integration/#streaming-transcription-with-streamtrue).
+the [Integration Guide §4](../integration/#streaming-transcription-with-streamtrue).
 
 ## Errors
 

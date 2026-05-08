@@ -379,7 +379,8 @@ def _render_index(groups: list[dict]) -> str:
     parts.append("")
     parts.append(
         "For the design rationale and integration journey (the *why*, "
-        "not the *what*), start with the [Integration Guide](../integration/)."
+        "not the *what*), start with the top-level "
+        "[Integration Guide](../../integration/)."
     )
     parts.append("")
     parts.append("## Sections")

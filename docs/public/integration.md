@@ -15,9 +15,11 @@ sidebar:
 > here.
 >
 > If you are integrating aistack for the first time, start here. The
-> per-endpoint reference pages (`asr.md`, `tts.md`, `llm.md`,
-> `models.md`, `errors.md`) drill into specifics; this guide stitches
-> them into a coherent integration journey.
+> per-endpoint design pages (under [API](./api/) — `asr` / `tts` /
+> `llm` / `models` / `errors` / `observability`) cover the *why*
+> behind each capability; the auto-generated [Reference](./api/reference/)
+> covers the field-level *what*. This guide stitches them into a
+> coherent journey.
 
 ---
 
@@ -47,10 +49,10 @@ error envelope, capability discovery via `/v1/models`, and 503 +
 | Method | Path | Purpose | Reference |
 |---|---|---|---|
 | GET | `/health` | Liveness probe. | This page §10. |
-| GET | `/v1/models` | Capability inventory — what the gateway can serve right now. | [`models.md`](models.md) |
-| POST | `/v1/audio/transcriptions` | Speech-to-text. | [`asr.md`](asr.md) |
-| POST | `/v1/audio/speech` | Text-to-speech (and related TTS endpoints under `/v1/audio/*`). | [`tts.md`](tts.md) |
-| POST | `/v1/chat/completions` | Chat completion (proxied to local Ollama). | [`llm.md`](llm.md) |
+| GET | `/v1/models` | Capability inventory — what the gateway can serve right now. | [`models`](./api/models/) |
+| POST | `/v1/audio/transcriptions` | Speech-to-text. | [`asr`](./api/asr/) |
+| POST | `/v1/audio/speech` | Text-to-speech (and related TTS endpoints under `/v1/audio/*`). | [`tts`](./api/tts/) |
+| POST | `/v1/chat/completions` | Chat completion (proxied to local Ollama). | [`llm`](./api/llm/) |
 
 All endpoints are unauthenticated by default; aistack is meant to bind
 on `127.0.0.1` or a private LAN. If exposed beyond that, put a
@@ -481,7 +483,7 @@ Branch on `error.kind`. The five kinds mean:
 | `cancelled` | Client disconnected mid-request | 499 | Usually no UI needed; user already knows they cancelled |
 | `unknown` | Anything that did not fit the categories above | 500 | Log and surface message; do not retry without diagnosis |
 
-Full reference: [`errors.md`](errors.md).
+Full reference: [`errors`](./api/errors/).
 
 ---
 
@@ -574,13 +576,13 @@ release cycle so consumers can migrate without coupled deploys.
 
 | You want to ... | Read |
 |---|---|
-| Understand the inventory response in detail | [`models.md`](models.md) |
-| Build an ASR client | [`asr.md`](asr.md) |
-| Build a TTS client | [`tts.md`](tts.md) |
-| Build an LLM client | [`llm.md`](llm.md) |
-| Branch on errors precisely | [`errors.md`](errors.md) |
-| Stitch your trace IDs through aistack (optional `X-Request-ID`) | [`observability.md`](observability.md#optional-send-x-request-id-for-cross-system-log-correlation) |
-| Read the metrics / access log / payload capture aistack records about your traffic | [`observability.md`](observability.md) |
+| Understand the inventory response in detail | [`models`](./api/models/) |
+| Build an ASR client | [`asr`](./api/asr/) |
+| Build a TTS client | [`tts`](./api/tts/) |
+| Build an LLM client | [`llm`](./api/llm/) |
+| Branch on errors precisely | [`errors`](./api/errors/) |
+| Stitch your trace IDs through aistack (optional `X-Request-ID`) | [`observability`](./api/observability/#optional-send-x-request-id-for-cross-system-correlation) |
+| Read the metrics / access log / payload capture aistack records about your traffic | [`observability`](./api/observability/) |
 | Understand aistack's internal architecture (not needed for integration) | aistack repo's `docs/design/architecture.md` (internal-only) |
 
 If something behaves differently from what this guide promises, the

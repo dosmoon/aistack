@@ -11,7 +11,7 @@ sidebar:
 
 These pages are generated from the live FastAPI app's OpenAPI spec on every build. The source of truth is the docstrings and Pydantic models in `aistack/api/`; editing the rendered markdown has no effect.
 
-For the design rationale and integration journey (the *why*, not the *what*), start with the [Integration Guide](../integration/).
+For the design rationale and integration journey (the *why*, not the *what*), start with the top-level [Integration Guide](../../integration/).
 
 ## Sections
 

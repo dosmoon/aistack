@@ -1,6 +1,8 @@
 ---
 title: aistack
 description: Local-first ASR / TTS / LLM-proxy gateway with an OpenAI-compatible API. Research-shaped open source for developers and researchers studying local AI capabilities.
+sidebar:
+  order: 0
 ---
 
 # aistack
@@ -17,7 +19,8 @@ If you want a turnkey local-AI experience, use [Ollama](https://ollama.com) dire
 
 | Section | What it is |
 |---|---|
-| [HTTP API](api/) | The contract aistack publishes to consumers. Start at the [Integration Guide](api/integration/). |
+| [Integration Guide](integration/) | Hello-world to production: capability discovery, requests, errors, streaming. The first page to read if you're new to aistack. |
+| [HTTP API](api/) | Per-endpoint design rationale (the *why*) plus the auto-generated [Reference](api/reference/) (the *what*). |
 
 More sections (configuration, deployment notes, research findings) will be progressively published. The full repo lives at [github.com/dosmoon/aistack](https://github.com/dosmoon/aistack).
 
