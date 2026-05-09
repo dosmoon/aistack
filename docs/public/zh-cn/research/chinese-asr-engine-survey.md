@@ -1,8 +1,9 @@
 ---
 title: 中文 ASR 引擎选型基线研究
-slug: chinese-asr-engine-survey
 date: 2026-05-08
 tags: [asr, chinese, mandarin, benchmark, sensevoice, paraformer, fireredasr]
+sidebar:
+  order: 4
 ---
 
 # 中文 ASR 引擎选型基线研究（2026 视角）
@@ -246,7 +247,7 @@ aistack 已经在 Parakeet 路径上实现过应用层 12 分钟切片 + word-LC
 
 ### Phase 3（决定 zh 路由的最终选择）
 - 看 Phase 2 数据，决定 `_select_for_auto` 对 zh 默认路由到谁
-- 把决策依据写入日报和 `aistack-positioning-and-product-paths.md`
+- 把决策依据写入日报和 aistack 产品路径设计文档（内部）
 
 ### 永远不在 aistack 里做的
 - FireRedASR-LLM (8.3B+) 集成 —— 太大，不适合 aistack 的研究硬件配置

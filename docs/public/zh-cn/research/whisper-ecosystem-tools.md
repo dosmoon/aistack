@@ -1,8 +1,9 @@
 ---
 title: Whisper 生态系统全景
-slug: whisper-ecosystem-tools
 date: 2026-05-08
 tags: [asr, whisper, faster-whisper, whisperx, whisper.cpp, ecosystem]
+sidebar:
+  order: 5
 ---
 
 # Whisper 生态系统全景（2026 视角）
@@ -48,7 +49,7 @@ Paraformer / SenseVoice / FireRedASR 都是开源 weights，但**没有形成生
 | **Const-me/Whisper** | C++ + DirectCompute | **Windows only** | 中等 | 未集成；Windows-exclusive 场景 |
 | **whisper-jax** | JAX/TPU | TPU/GPU | 中-快 | 不适用 |
 
-¹ 详见 `aistack-positioning-and-product-paths.md` 的"路径 A：whisper.cpp 为核心 + 离线优先"
+¹ 详见 aistack 产品路径设计文档（内部） 的"路径 A：whisper.cpp 为核心 + 离线优先"
 ² Argmax 自家 benchmark，2025 数据
 
 **关键观察**：`faster-whisper` 在 Linux/Win + CUDA 是合理默认；`whisper.cpp` 在跨平台 + 单二进制 + 离线分发场景无替代；`insanely-fast-whisper` 在批量处理 SaaS 后端有意义但对单请求 gateway 价值不大。
@@ -189,7 +190,7 @@ WhisperSpeech: text → [新训 T2S] → semantic tokens → [新训 S2A] → ac
 
 ## 四、对未来产品形态的启示
 
-参考 `aistack-positioning-and-product-paths.md` 的产品路径分析，Whisper 生态对**离线优先产品**的启示是：
+参考 aistack 产品路径设计文档（内部） 的产品路径分析，Whisper 生态对**离线优先产品**的启示是：
 
 | 产品需求 | 对应生态选择 | 原因 |
 |---|---|---|

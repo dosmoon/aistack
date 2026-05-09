@@ -1,3 +1,11 @@
+---
+title: Whisper 翻译能力的真实边界
+date: 2026-05-08
+tags: [asr, whisper, translation, capability-boundary]
+sidebar:
+  order: 3
+---
+
 # Whisper 翻译能力的真实边界
 
 > TL;DR

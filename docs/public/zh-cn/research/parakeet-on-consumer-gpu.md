@@ -1,9 +1,10 @@
 ---
 title: NVIDIA Parakeet TDT 在消费级 GPU 上跑长音频
-slug: parakeet-on-consumer-gpu
 date: 2026-05-07
 updated: 2026-05-08
 tags: [asr, parakeet, nemo, nvidia, 8gb-vram, long-audio, chunked-transcription]
+sidebar:
+  order: 2
 ---
 
 # NVIDIA Parakeet TDT 在消费级 GPU 上跑长音频

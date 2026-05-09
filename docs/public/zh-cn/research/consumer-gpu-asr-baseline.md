@@ -1,9 +1,10 @@
 ---
 title: 消费级 GPU 本地 ASR 性能基线
-slug: consumer-gpu-asr-baseline
 date: 2026-05-07
 updated: 2026-05-08
 tags: [asr, parakeet, benchmark, consumer-gpu, self-hosting]
+sidebar:
+  order: 1
 ---
 
 # 消费级 GPU 本地 ASR 性能基线
