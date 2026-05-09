@@ -59,6 +59,16 @@ For `api/*.md`: edit `scripts/gen_api_reference.py`.
   pipeline and the source is in English (docstrings, field names).
 - Don't unilaterally rewrite Chinese technical titles. Propose options.
 
+## Research notes — drafting workflow
+
+Research notes are English-first. Draft and iterate in
+`docs/research-note/` (not published, not part of the site). Filenames
+prefixed `_wip-` are explicit drafts. Once a note's conclusion is
+stable, transfer the EN to `docs/public/research/` and produce the ZH
+counterpart in `docs/public/zh-cn/research/`. The `docs/research-note/`
+copy can stay as the working draft or be retired once the public copy
+is canonical.
+
 ## Local preview
 
 ```bash
