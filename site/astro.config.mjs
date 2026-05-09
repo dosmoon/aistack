@@ -15,9 +15,6 @@ export default defineConfig({
       social: [
         { icon: 'github', label: 'GitHub', href: 'https://github.com/dosmoon/aistack' },
       ],
-      editLink: {
-        baseUrl: 'https://github.com/dosmoon/aistack/edit/main/docs/public/',
-      },
       lastUpdated: true,
     }),
   ],
