@@ -2,7 +2,7 @@
 title: HTTP API
 description: aistack 的 HTTP 契约 —— ASR、TTS、LLM 代理、模型清单、错误、可观测性。
 sidebar:
-  order: 2
+  order: 3
 ---
 
 # aistack HTTP API

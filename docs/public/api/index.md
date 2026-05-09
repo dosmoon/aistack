@@ -2,7 +2,7 @@
 title: HTTP API
 description: aistack's HTTP contract — ASR, TTS, LLM proxy, models inventory, errors, and observability.
 sidebar:
-  order: 2
+  order: 3
 ---
 
 # aistack HTTP API

@@ -2,7 +2,7 @@
 title: Configuration
 description: Why aistack's configuration knobs default the way they do — and when you should deviate. Companion to the auto-generated env-var reference.
 sidebar:
-  order: 3
+  order: 2
 ---
 
 # aistack Configuration

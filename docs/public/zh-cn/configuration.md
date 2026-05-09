@@ -2,7 +2,7 @@
 title: 配置
 description: aistack 各配置开关的默认值为什么这样定，以及你应当在何时偏离默认值。配套于自动生成的环境变量参考。
 sidebar:
-  order: 3
+  order: 2
 ---
 
 # aistack 配置
