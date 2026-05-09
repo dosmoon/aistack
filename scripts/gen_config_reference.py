@@ -279,7 +279,7 @@ def _render_helper_section(helpers: list[tuple[str, str, str, str]]) -> str:
 
 FRONTMATTER = """\
 ---
-title: Configuration
+title: Configuration Reference
 description: "Auto-generated reference for every AISTACK_* environment variable, with types, defaults, and effects. Source — aistack/config.py."
 sidebar:
   order: 0
