@@ -8,11 +8,10 @@ sidebar:
 # aistack Configuration
 
 aistack reads configuration from environment variables. There is no
-config file — env keeps deployment topology (cache paths, GPU choice,
-upstream URLs) in the launch script (`scripts/dev.bat`,
-`docker run -e ...`, systemd units, etc.) where it belongs. The
-admin UI may toggle a few session-level switches at runtime but never
-persists them: restart returns to env defaults.
+config file and no `.env` support — `aistack/config.py` reads
+`os.environ` directly. The admin UI may toggle a few session-level
+switches at runtime but never persists them: restart returns to env
+defaults.
 
 This page covers the *why* — the design rationale behind each default,
 the sweep results that produced the numbers, and when to deviate. For
@@ -20,6 +19,30 @@ the field-by-field list of every variable (name, type, default,
 one-line effect), see the auto-generated
 [Configuration Reference](./reference/configuration/), which is
 re-rendered from `aistack/config.py` on every build.
+
+## Where to set these
+
+The launch script is the canonical place to set env variables. The
+only launcher that ships with the project today is
+`scripts/dev.bat` (Windows). It already contains commented
+`set KEY=VALUE` templates for the most-tweaked variables — uncomment
+the lines you need, or add new ones:
+
+```bat
+REM Inside scripts/dev.bat, before the `uvicorn` line:
+set HF_HOME=D:\AI_Models\hf
+set AISTACK_OBS_PAYLOAD=on
+```
+
+The `if "%KEY%"==""` guards in `dev.bat` mean that any variable
+already exported in your shell wins over the script's default — useful
+for one-off overrides (`set HF_HOME=E:\... && scripts\dev.bat`).
+
+For other platforms or production deployments, you supply your own
+launcher: a shell script that exports the variables before invoking
+`python -m uvicorn aistack.main:app`, a systemd unit's `Environment=`
+lines, a `docker run -e` flag, etc. aistack does not ship those today,
+but the variable names below work identically wherever they are set.
 
 ## Conventions
 
@@ -144,41 +167,44 @@ Disk-budget knobs that interact:
 
 ## Complete-defaults snapshot
 
-Copy-paste starting point; everything below matches the defaults
-already baked into the code, so removing a line falls back to the
-same behaviour. Keep what you change, delete the rest.
+Drop-in starting point for `scripts/dev.bat`. Every line below matches
+the default already baked into the code, so deleting a line falls back
+to the same behaviour. Keep what you change, delete the rest.
 
-```sh
-# Model homes (point at your shared cache)
-HF_HOME=D:\AI_Models\hf
-MODELSCOPE_CACHE=D:\AI_Models\modelscope
-NEMO_CACHE_DIR=D:\AI_Models\nemo
+```bat
+REM Model homes (point at your shared cache)
+set HF_HOME=D:\AI_Models\hf
+set MODELSCOPE_CACHE=D:\AI_Models\modelscope
+set NEMO_CACHE_DIR=D:\AI_Models\nemo
 
-# Model lifecycle
-AISTACK_MODEL_KEEP_ALIVE_SEC=300
-AISTACK_MODEL_SCAN_INTERVAL_SEC=60
+REM Model lifecycle
+set AISTACK_MODEL_KEEP_ALIVE_SEC=300
+set AISTACK_MODEL_SCAN_INTERVAL_SEC=60
 
-# Parakeet — attention
-AISTACK_PARAKEET_ATTENTION_MODE=local
-AISTACK_PARAKEET_ATT_CONTEXT_SIZE=256,256
+REM Parakeet — attention
+set AISTACK_PARAKEET_ATTENTION_MODE=local
+set AISTACK_PARAKEET_ATT_CONTEXT_SIZE=256,256
 
-# Parakeet — chunking
-AISTACK_PARAKEET_CHUNK_DISABLE=0
-AISTACK_PARAKEET_CHUNK_WINDOW_SEC=720
-AISTACK_PARAKEET_CHUNK_OVERLAP_SEC=120
-AISTACK_PARAKEET_CHUNK_MIN_LAST_SEC=300
+REM Parakeet — chunking
+set AISTACK_PARAKEET_CHUNK_DISABLE=0
+set AISTACK_PARAKEET_CHUNK_WINDOW_SEC=720
+set AISTACK_PARAKEET_CHUNK_OVERLAP_SEC=120
+set AISTACK_PARAKEET_CHUNK_MIN_LAST_SEC=300
 
-# Upstreams
-AISTACK_OLLAMA_URL=http://127.0.0.1:11434
-AISTACK_QWEN3_TTS_UPSTREAM=http://127.0.0.1:17860
+REM Upstreams
+set AISTACK_OLLAMA_URL=http://127.0.0.1:11434
+set AISTACK_QWEN3_TTS_UPSTREAM=http://127.0.0.1:17860
 
-# Observability
-AISTACK_OBS_METRICS=on
-AISTACK_OBS_ACCESS_LOG=on
-AISTACK_OBS_PAYLOAD=off
-AISTACK_OBS_LOG_DIR=./logs
-AISTACK_OBS_PAYLOAD_MAX_GB=5
-AISTACK_OBS_PAYLOAD_MAX_DAYS=7
-AISTACK_OBS_PAYLOAD_RESP_MAX_MB=50
-AISTACK_OBS_METRICS_WINDOW_MIN=60
+REM Observability
+set AISTACK_OBS_METRICS=on
+set AISTACK_OBS_ACCESS_LOG=on
+set AISTACK_OBS_PAYLOAD=off
+set AISTACK_OBS_LOG_DIR=.\logs
+set AISTACK_OBS_PAYLOAD_MAX_GB=5
+set AISTACK_OBS_PAYLOAD_MAX_DAYS=7
+set AISTACK_OBS_PAYLOAD_RESP_MAX_MB=50
+set AISTACK_OBS_METRICS_WINDOW_MIN=60
 ```
+
+For POSIX shells, swap `set KEY=VALUE` for `export KEY=VALUE` and
+flip the path separators.
