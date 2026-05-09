@@ -15,6 +15,14 @@ export default defineConfig({
       social: [
         { icon: 'github', label: 'GitHub', href: 'https://github.com/dosmoon/aistack' },
       ],
+      sidebar: [
+        { label: 'aistack', link: '/' },
+        { label: 'Integration Guide', link: '/integration/' },
+        { label: 'Configuration', link: '/configuration/' },
+        { label: 'HTTP API', autogenerate: { directory: 'api' } },
+        { label: 'Reference', autogenerate: { directory: 'reference' } },
+        { label: 'Research Notes', autogenerate: { directory: 'research' } },
+      ],
       lastUpdated: true,
     }),
   ],
